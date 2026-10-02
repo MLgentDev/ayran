@@ -1,0 +1,13 @@
+pub mod activate;
+pub mod cache;
+pub mod config;
+pub mod diagnostic;
+pub mod doctor;
+pub mod enumerate;
+pub mod harness;
+pub mod launch;
+pub mod mcp;
+pub mod plugin_audit;
+pub mod resolve;
+pub mod session;
+pub mod skills;
