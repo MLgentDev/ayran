@@ -340,6 +340,9 @@ if (@(Complete 'ayran comp').Count) { throw 'failed command completion' }
         .current_dir(home.dir.path())
         .env("HOME", home.dir.path())
         .env("XDG_CONFIG_HOME", home.dir.path().join("config"))
+        .env("APPDATA", home.dir.path().join("config"))
+        .env("LOCALAPPDATA", home.dir.path().join("state"))
+        .env("USERPROFILE", home.dir.path())
         .env("PATH", path)
         .output().unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -361,6 +364,9 @@ impl TestHome {
         command
             .current_dir(self.dir.path())
             .env("HOME", self.dir.path())
+            .env("USERPROFILE", self.dir.path())
+            .env("APPDATA", self.dir.path().join("config"))
+            .env("LOCALAPPDATA", self.dir.path().join("state"))
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("CODEX_HOME", self.dir.path().join("codex"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
@@ -492,6 +498,7 @@ fn completion_is_silent_on_invalid_config_or_malformed_requests() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn bash_activation_registers_and_runs_completion_without_aliases() {
     if Command::new("bash").arg("--version").output().is_err() {
@@ -553,6 +560,7 @@ COMP_CWORD=2
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn bash_alias_completion_offers_only_launch_flags() {
     if Command::new("bash").arg("--version").output().is_err() {
@@ -712,6 +720,7 @@ rmdir "$REMOVED_CWD" || exit 1
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn zsh_activation_registers_and_runs_completion_with_descriptions() {
     if Command::new("zsh").arg("--version").output().is_err() {
@@ -1094,13 +1103,19 @@ fn codex_cache_location_follows_isolated_then_codex_home_then_home() {
         "[harnesses.codex]\nhome = 'isolated'\n",
     );
     assert_completion(home.complete(&["ayran", "--codex", "-m", ""]), "isolated\n");
+    // Unix falls back to HOME; Windows requires LOCALAPPDATA for Isolated homes.
+    #[cfg(not(windows))]
+    let without_state = "isolated-fallback\n";
+    #[cfg(windows)]
+    let without_state = "";
     assert_completion(
         home.command()
             .env_remove("XDG_STATE_HOME")
+            .env_remove("LOCALAPPDATA")
             .args(["__complete", "--", "ayran", "--codex", "-m", ""])
             .output()
             .unwrap(),
-        "isolated-fallback\n",
+        without_state,
     );
     fs::remove_file(
         home.dir

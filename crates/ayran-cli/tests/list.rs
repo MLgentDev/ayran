@@ -46,6 +46,19 @@ impl Workspace {
         Self(tempfile::tempdir().unwrap())
     }
 
+    fn with_backslash_path() -> Self {
+        // Exercise Windows path escaping on Unix too, where backslashes are legal names.
+        #[cfg(unix)]
+        return Self(
+            tempfile::Builder::new()
+                .prefix("ayran\\list-")
+                .tempdir()
+                .unwrap(),
+        );
+        #[cfg(windows)]
+        Self::new()
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_ayran"))
             .current_dir(self.0.path())
@@ -61,7 +74,7 @@ impl Workspace {
 
 #[test]
 fn profiles_show_merged_definitions_and_direct_members_without_a_harness() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::with_backslash_path();
     let user = workspace.0.path().join("user.toml");
     let local = workspace.0.path().join("ayran.local.toml");
     fs::write(&user, "[plugins.review]\nall='review@m'\n[profiles.base]\nplugins=['inner']\ndefault=true\n[profiles.team]\nplugins=['old']\ndefault=true\n[profiles.empty]\n").unwrap();
@@ -73,9 +86,9 @@ fn profiles_show_merged_definitions_and_direct_members_without_a_harness() {
         String::from_utf8_lossy(&output.stdout),
         format!(
             "name\tdefault\tlayer\tdescription\tmembers\nbase\t*\t{}\t\tplugins: inner\nempty\t\t{}\t\t\nteam\t\t{}\tTeam\\ttools\\nnow\tplugins: review, build · profiles: base\n",
-            user.display(),
-            user.display(),
-            local.display()
+            user.to_string_lossy().replace('\\', "\\\\"),
+            user.to_string_lossy().replace('\\', "\\\\"),
+            local.to_string_lossy().replace('\\', "\\\\")
         )
     );
     for harness in ["claude", "codex", "copilot"] {
@@ -286,7 +299,7 @@ fn harness_filters_keep_every_plugin_but_only_the_requested_binding_column() {
 
 #[test]
 fn list_shows_merged_plugins_and_distinguishes_missing_and_absent_bindings() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::with_backslash_path();
     fs::write(
         workspace.0.path().join("user.toml"),
         "[plugins.review]\nall='old@m'\ndefault=true\ndescription='Old'\n",
@@ -301,8 +314,8 @@ fn list_shows_merged_plugins_and_distinguishes_missing_and_absent_bindings() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "name\tdefault\tlayer\tdescription\tclaude\tcodex\tcopilot\nbuild\t*\t{}\t\tbuild@m\t—\tbuild@m\nreview\t\t{}\tReview code\t—\t✗\tpath\n",
-            project.display(),
-            project.display()
+            project.to_string_lossy().replace('\\', "\\\\"),
+            project.to_string_lossy().replace('\\', "\\\\")
         )
     );
     assert_eq!(
@@ -313,7 +326,7 @@ fn list_shows_merged_plugins_and_distinguishes_missing_and_absent_bindings() {
 
 #[test]
 fn list_shows_merged_skills_and_distinguishes_missing_and_absent_bindings() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::with_backslash_path();
     fs::write(
         workspace.0.path().join("user.toml"),
         "[skills.review]\nall='old'\ndefault=true\ndescription='Old'\n",
@@ -328,8 +341,8 @@ fn list_shows_merged_skills_and_distinguishes_missing_and_absent_bindings() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "name\tdefault\tlayer\tdescription\tclaude\tcodex\tcopilot\nbuild\t*\t{}\t\tbuild\t—\tbuild\nreview\t\t{}\tReview code\t—\t✗\tpath\n",
-            project.display(),
-            project.display()
+            project.to_string_lossy().replace('\\', "\\\\"),
+            project.to_string_lossy().replace('\\', "\\\\")
         )
     );
     assert!(

@@ -3,6 +3,7 @@ name: check
 on:
   push:
   pull_request:
+  workflow_call:
 
 jobs:
   check:
@@ -19,3 +20,12 @@ jobs:
           sudo apt-get install -y zsh powershell
           pwsh -Version
       - run: just check
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - run: cargo build --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --no-fail-fast

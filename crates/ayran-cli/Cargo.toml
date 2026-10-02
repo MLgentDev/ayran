@@ -2,6 +2,11 @@
 name = "ayran-cli"
 version.workspace = true
 edition.workspace = true
+publish = false
+repository = "https://github.com/MLgentDev/ayran"
+
+[package.metadata.dist]
+dist = true
 
 [[bin]]
 name = "ayran"

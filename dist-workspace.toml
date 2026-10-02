@@ -1,0 +1,16 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.0"
+ci = "github"
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+installers = ["shell", "powershell"]
+install-path = "~/.local/bin"
+install-updater = false
+github-attestations = true
+plan-jobs = ["./check"]
+# The development checkout keeps the generated workflow in the publish overlay.
+allow-dirty = ["ci"]
+# Keep the GitHub release body empty.
+display = false

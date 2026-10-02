@@ -102,6 +102,8 @@ impl Workspace {
         Command::new(env!("CARGO_BIN_EXE_ayran"))
             .current_dir(self.0.path())
             .env("HOME", self.0.path())
+            .env("USERPROFILE", self.0.path())
+            .env("LOCALAPPDATA", self.0.path().join("state"))
             .env("AYRAN_CONFIG", self.0.path().join("user.toml"))
             .env("PATH", self.0.path())
             .env("XDG_CACHE_HOME", self.0.path().join("cache"))
@@ -124,8 +126,10 @@ fn absent_harnesses_print_home_headings_and_exact_json() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
-            "config\nclaude (home: {0}/.claude)\nnote[harness-not-found]: Harness claude was not found on PATH\ncodex (home: {0}/.codex)\nnote[harness-not-found]: Harness codex was not found on PATH\ncopilot (home: {0}/.copilot)\nnote[harness-not-found]: Harness copilot was not found on PATH\n0 errors, 0 warnings, 3 notes\n",
-            w.0.path().display()
+            "config\nclaude (home: {0})\nnote[harness-not-found]: Harness claude was not found on PATH\ncodex (home: {1})\nnote[harness-not-found]: Harness codex was not found on PATH\ncopilot (home: {2})\nnote[harness-not-found]: Harness copilot was not found on PATH\n0 errors, 0 warnings, 3 notes\n",
+            w.0.path().join(".claude").display(),
+            w.0.path().join(".codex").display(),
+            w.0.path().join(".copilot").display()
         )
     );
     let output = w.run(&["doctor", "--json"]);
@@ -146,8 +150,8 @@ fn default_and_alias_gaps_are_graded_and_quiet_keeps_counts() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
-            "config\ncodex (home: {}/.codex)\nerror[harness-not-found]: Harness codex was not found on PATH\n1 error, 1 warning, 0 notes\n",
-            w.0.path().display()
+            "config\ncodex (home: {})\nerror[harness-not-found]: Harness codex was not found on PATH\n1 error, 1 warning, 0 notes\n",
+            w.0.path().join(".codex").display()
         )
     );
     let output = w.run(&["doctor", "--json", "--codex"]);

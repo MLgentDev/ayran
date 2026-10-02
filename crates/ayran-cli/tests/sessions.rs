@@ -16,6 +16,9 @@ impl Home {
         command.current_dir(self.0.path());
         for (key, path) in [
             ("HOME", ""),
+            ("USERPROFILE", ""),
+            ("APPDATA", "config"),
+            ("LOCALAPPDATA", "state"),
             ("XDG_CONFIG_HOME", "config"),
             ("XDG_STATE_HOME", "state"),
             ("XDG_CACHE_HOME", "cache"),
