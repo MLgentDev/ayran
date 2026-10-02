@@ -315,7 +315,7 @@ pub(crate) fn active_codex_plugin_root(cache: &Path) -> Result<Option<PathBuf>, 
     };
     let mut versions = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(&failure)?;
+        let entry = entry.map_err(failure)?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if !name.is_empty()
@@ -323,7 +323,7 @@ pub(crate) fn active_codex_plugin_root(cache: &Path) -> Result<Option<PathBuf>, 
             && name.chars().all(|character| {
                 character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '+')
             })
-            && entry.file_type().map_err(&failure)?.is_dir()
+            && entry.file_type().map_err(failure)?.is_dir()
         {
             versions.push(name.to_owned());
         }
