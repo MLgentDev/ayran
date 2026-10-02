@@ -54,9 +54,12 @@ fn update(check: bool) -> Result<(), String> {
     }
     let current = env!("CARGO_PKG_VERSION");
     if check {
-        let available = updater
-            .is_update_needed_sync()
-            .map_err(|error| format!("Could not check for an ayran update: {error}"))?;
+        let available = updater.is_update_needed_sync().map_err(|error| {
+            format!(
+                "Could not check for an ayran update: {}",
+                error_chain(&error)
+            )
+        })?;
         if available {
             println!(
                 "An ayran update is available (current version: {current}); run `ayran update` to install it."
@@ -67,11 +70,27 @@ fn update(check: bool) -> Result<(), String> {
     } else {
         match updater
             .run_sync()
-            .map_err(|error| format!("Could not update ayran: {error}"))?
+            .map_err(|error| format!("Could not update ayran: {}", error_chain(&error)))?
         {
             Some(result) => println!("ayran {current} -> {}", result.new_version),
             None => println!("ayran {current} is up to date."),
         }
     }
     Ok(())
+}
+
+/// Reqwest's top-level message ("error sending request for url ...") hides the
+/// TLS or proxy cause, so append each source in the chain.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = cause.source();
+    }
+    message
 }
