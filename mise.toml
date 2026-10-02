@@ -2,3 +2,4 @@
 rust = { version = "1.99.0", components = ["rustfmt", "clippy"] }
 just = "1.58.0"
 "aqua:axodotdev/cargo-dist" = "0.33.0"
+"cargo:cargo-edit" = "0.13.13"

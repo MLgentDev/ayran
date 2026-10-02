@@ -5,9 +5,6 @@ It selects plugins, skills, MCP servers, and profiles for Codex, Claude Code,
 and GitHub Copilot CLI.
 
 This repository is a published mirror of a private development repository.
-Each snapshot commit has a `Source:` trailer naming the development commit
-it was published from. All changes originate in that development repository;
-direct edits here are overwritten by the next snapshot.
 
 Pull requests aren't accepted. Issue reports are welcome through this
 repository's GitHub Issues.
@@ -25,13 +22,8 @@ irm https://github.com/MLgentDev/ayran/releases/latest/download/ayran-cli-instal
 ```
 
 Both installers use `~/.local/bin` (`%USERPROFILE%\\.local\\bin` on Windows)
-and add it to your `PATH`. **The Windows build is experimental**: it is
-compiled and linted in CI; the full test suite does not run on Windows yet.
-CI runs the tests that do not require Unix shell fixtures.
-
-Release candidates are prereleases and are not available through
-`releases/latest`. For a candidate, replace `latest/download` in the installer
-URL with `download/v0.1.0-rc.1`.
+and add it to your `PATH`. Windows builds are compiled, linted, and tested
+in CI. Tests that require Unix shell fixtures run on Linux.
 
 To verify a downloaded archive, download `sha256.sum` from the same release
 and check its checksum, then verify its build attestation:
@@ -57,5 +49,3 @@ To verify the source, install the tool versions in `mise.toml`, then run:
 ```sh
 just check
 ```
-
-The justfile also provides `build`, `fmt-check`, `lint`, and `test` separately.
