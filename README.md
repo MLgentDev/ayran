@@ -25,6 +25,19 @@ Both installers use `~/.local/bin` (`%USERPROFILE%\\.local\\bin` on Windows)
 and add it to your `PATH`. Windows builds are compiled, linted, and tested
 in CI. Tests that require Unix shell fixtures run on Linux.
 
+For installations made with these installers, update to the latest stable release:
+
+```sh
+ayran update
+```
+
+Use `ayran update --check` to check without installing. The command reports
+the current version when up to date, and the old and new versions after an
+update. Set `GITHUB_TOKEN` to use authenticated GitHub API requests with
+higher rate limits. Updates require the cargo-dist install receipt for the
+running executable. For source installs, reinstall from the latest source;
+for manually unpacked archives, download a new archive or rerun an installer.
+
 To verify a downloaded archive, download `sha256.sum` from the same release
 and check its checksum, then verify its build attestation:
 

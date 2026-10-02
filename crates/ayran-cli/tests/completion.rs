@@ -465,6 +465,13 @@ fn hidden_command_returns_plain_candidates() {
 }
 
 #[test]
+fn update_command_and_check_flag_complete() {
+    let home = TestHome::new();
+    assert_completion(home.complete(&["ayran", "up"]), "update\n");
+    assert_completion(home.complete(&["ayran", "update", "--ch"]), "--check\n");
+}
+
+#[test]
 fn completion_is_silent_on_invalid_config_or_malformed_requests() {
     let home = TestHome::new();
     for args in [

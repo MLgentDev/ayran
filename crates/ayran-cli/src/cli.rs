@@ -8,6 +8,7 @@ pub fn command() -> Command {
         .subcommand(config_command::command())
         .subcommand(crate::doctor_command::command())
         .subcommand(crate::list_command::command())
+        .subcommand(crate::update_command::command())
         .subcommand(
             Command::new("__complete").hide(true).arg(
                 Arg::new("words")

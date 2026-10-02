@@ -20,6 +20,7 @@ mod session_list;
 mod session_store;
 mod skill_activation;
 mod skill_enumeration;
+mod update_command;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -80,6 +81,9 @@ fn run() -> i32 {
 
     if let Some(("config", config)) = matches.subcommand() {
         return config_command::run(config);
+    }
+    if let Some(("update", update)) = matches.subcommand() {
+        return update_command::run(update);
     }
     if let Some(("doctor", doctor)) = matches.subcommand() {
         return doctor_command::run(doctor);
