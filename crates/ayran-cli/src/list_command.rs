@@ -8,7 +8,7 @@ const HARNESSES: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Copil
 pub fn command() -> Command {
     let mut command = Command::new("list")
         .about("List Plugins, Skills, MCP servers, Profiles and Aliases from the current directory's Config layers")
-        .arg(Arg::new("kind").value_parser(["plugins", "skills", "mcp", "profiles", "aliases", "sessions"]));
+        .arg(Arg::new("kind").value_parser(["plugins", "skills", "mcp", "profiles", "aliases", "sessions", "marketplaces"]));
     for harness in HARNESSES {
         command = command.arg(
             Arg::new(harness.binary())
@@ -134,7 +134,7 @@ pub(crate) fn json_envelope(
 ) -> serde_json::Value {
     use ayran_core::diagnostic::Severity;
     serde_json::json!({
-        "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "aliases":[], "sessions":[],
+        "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "aliases":[], "sessions":[], "marketplaces":[],
         "diagnostics":diagnostics,
         "summary":{
             "errors":diagnostics.iter().filter(|d| matches!(d.severity, Severity::Error)).count(),
@@ -184,6 +184,21 @@ pub fn run(matches: &ArgMatches) -> i32 {
         .into_iter()
         .filter(|harness| selected.is_none_or(|name| name == harness.binary()))
         .collect();
+    let marketplace_rows = if kind.is_none_or(|k| k == "marketplaces") {
+        match crate::marketplace_list::rows(&layers, &harnesses) {
+            Ok(rows) => rows,
+            Err(d) => {
+                if matches.get_flag("json") {
+                    println!("{}", json_envelope(&[d]));
+                } else {
+                    crate::render(&d, false);
+                }
+                return 3;
+            }
+        }
+    } else {
+        Vec::new()
+    };
     if matches.get_flag("json") {
         let plugins: Vec<_> = layers.plugins.iter().filter(|_| kind.is_none_or(|kind| kind == "plugins")).map(|(name, plugin)| {
             let bindings: serde_json::Map<_, _> = harnesses.iter().map(|h| (h.binary().to_owned(), binding_json(plugin.value.binding(*h)))).collect();
@@ -219,8 +234,12 @@ pub fn run(matches: &ArgMatches) -> i32 {
         output["mcp"] = serde_json::json!(mcp);
         output["profiles"] = serde_json::json!(profiles);
         output["aliases"] = serde_json::json!(aliases);
+        output["marketplaces"] = serde_json::json!(marketplace_rows);
         println!("{output}");
         return 0;
+    }
+    if kind == Some("marketplaces") || !marketplace_rows.is_empty() {
+        crate::marketplace_list::print(&marketplace_rows, &harnesses);
     }
     if kind.is_none_or(|kind| kind == "plugins") {
         let mut header = vec!["name", "default", "layer", "description"];

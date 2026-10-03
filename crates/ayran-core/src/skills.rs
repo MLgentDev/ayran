@@ -29,6 +29,12 @@ pub struct SkillState {
     pub aliases: BTreeMap<String, String>,
     /// Codex Skills keyed by canonical SKILL.md path, for path-scoped overrides.
     pub codex: BTreeMap<PathBuf, CodexSkill>,
+    /// Effective off paths from user/profile rules.
+    pub codex_off: BTreeSet<PathBuf>,
+    /// False when profile arguments are ambiguous; preserve all original overrides.
+    pub codex_skip_redundant: bool,
+    /// Effective Claude per-name overrides; None preserves every generated override.
+    pub claude_overrides: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 impl SkillState {
@@ -240,8 +246,20 @@ pub(crate) fn resolve(
         for (path, skill) in &state.codex {
             let selected = native_items.contains(&skill.name);
             if selected || skill.personal {
-                path_overrides.insert(path.clone(), selected);
-                if !selected {
+                let redundant =
+                    state.codex_skip_redundant && selected != state.codex_off.contains(path);
+                if redundant {
+                    trace.push(format!(
+                        "Skill {}: {} (natively {}, no override needed, {})",
+                        skill.name,
+                        if selected { "selected" } else { "hidden" },
+                        if selected { "on" } else { "off" },
+                        path.display()
+                    ));
+                } else {
+                    path_overrides.insert(path.clone(), selected);
+                }
+                if !selected && !redundant {
                     trace.push(format!(
                         "Skill {}: hidden (unselected personal Skill, {})",
                         skill.name,
@@ -293,6 +311,21 @@ pub(crate) fn resolve(
             overrides.insert(name.clone(), "off");
             trace.push(format!("Skill {name}: hidden (unselected personal Skill)"));
         }
+    }
+    if harness == Harness::Claude
+        && let Some(native) = &state.claude_overrides
+    {
+        overrides.retain(|name, value| {
+            let redundant = native.get(name).and_then(serde_json::Value::as_str) == Some(*value)
+                || (*value == "on" && !native.contains_key(name));
+            if redundant {
+                trace.push(format!(
+                    "Skill {name}: {} (natively {value}, no override needed)",
+                    if *value == "on" { "selected" } else { "hidden" }
+                ));
+            }
+            !redundant
+        });
     }
     let generated = if targets.is_empty() {
         None

@@ -414,7 +414,6 @@ fn copilot_resume_regenerates_overrides_in_the_recorded_home_and_directory() {
         ["--model", "gpt-5.4"],
         ["--reasoning-effort", "high"],
         ["--plugin-dir", plugin.to_str().unwrap()],
-        ["--enable-mcp-server", "selected"],
         ["--disable-mcp-server", "hidden"],
     ] {
         assert!(args.windows(2).any(|actual| actual == pair), "{raw}");
@@ -594,7 +593,7 @@ fn resume_uses_the_recorded_home_and_regenerates_capabilities_from_current_confi
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(settings["skillOverrides"]["personal"], "on");
+    assert!(settings["skillOverrides"].get("personal").is_none());
     assert_eq!(settings["skillOverrides"]["hidden"], "off");
     assert_eq!(fs::read(&path).unwrap(), original);
     let quiet = home.run(&["resume", id, "--dry-run", "-q"]);
@@ -1291,7 +1290,7 @@ fn copilot_mcp_unreadable_state_refuses_launch_and_custom_home_is_respected() {
                 .lines()
                 .collect::<Vec<_>>()
                 .windows(2)
-                .any(|pair| pair == ["--enable-mcp-server", "custom"])
+                .all(|pair| pair != ["--enable-mcp-server", "custom"])
         );
         assert!(!home.record().contains("ignored"));
     }
@@ -1401,7 +1400,7 @@ fn copilot_mcp_workspace_servers_are_valid_without_trust_and_shared_names_leak()
     for name in ["root", "nested"] {
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["--enable-mcp-server", name]),
+                .all(|pair| pair != ["--enable-mcp-server", name]),
             "{record}"
         );
     }
@@ -2053,6 +2052,7 @@ fn codex_repaired_yaml_name_excludes_the_comment() {
         "---\nname: [foo # note\ndescription: Example\n---\nInstructions",
     )
     .unwrap();
+    home.codex_config("[[skills.config]]\nname = '[foo'\nenabled = false\n");
     home.config("[skills.x]\ncodex = '[foo'\n");
     let output = home.run(&["--codex", "--skill", "x"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -2074,6 +2074,7 @@ fn codex_native_skills_accept_repairable_yaml_descriptions() {
         "---\nname: repaired\ndescription: Build for AWS: ECS\n---\nInstructions",
     )
     .unwrap();
+    home.codex_config("[[skills.config]]\nname = 'repaired'\nenabled = false\n");
     home.config("[skills.x]\ncodex = 'repaired'\n");
     let output = home.run(&["--codex", "--skill", "x"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -2175,7 +2176,7 @@ fn codex_custom_project_root_markers_include_ancestor_skills() {
     home.skill("project/.agents/skills/team", "team");
     home.skill(".codex/skills/.system/ignored", "ignored");
     home.config("[skills.x]\ncodex = 'team'\n");
-    home.codex_config("project_root_markers = ['custom-root']\n");
+    home.codex_config("project_root_markers = ['custom-root']\n[[skills.config]]\nname = 'team'\nenabled = false\n");
     let output = home
         .command()
         .current_dir(home.dir.path().join("project/subdir"))
@@ -2306,6 +2307,7 @@ fn codex_unreadable_skill_state_fails_even_without_a_selection() {
 fn codex_skill_dry_run_shows_one_array_and_passthrough_stays_last() {
     let home = TestHome::new();
     home.skill(".agents/skills/quote's \"directory", "tdd");
+    home.codex_config("[[skills.config]]\nname = 'tdd'\nenabled = false\n");
     home.config("[skills.x]\nall = 'tdd'\n[skills.y]\ncodex = 'tdd'\n");
     let args = [
         "--codex",
@@ -2348,6 +2350,7 @@ fn codex_skill_dry_run_shows_one_array_and_passthrough_stays_last() {
 fn codex_empty_frontmatter_name_falls_back_to_directory_name() {
     let home = TestHome::new();
     home.skill(".agents/skills/fallback", "''");
+    home.codex_config("[[skills.config]]\nname = 'fallback'\nenabled = false\n");
     home.config("[skills.x]\ncodex = 'fallback'\n");
     let output = home.run(&["--codex", "--skill", "x"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -2405,16 +2408,20 @@ fn codex_leaves_project_and_bundled_skills_alone_even_in_a_home_dotfiles_repo() 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let rules = home.codex_skill_rules();
     assert!(
-        rules[&home
-            .dir
-            .path()
-            .join("project/nested/.agents/skills/local/SKILL.md")]
+        !rules.contains_key(
+            &home
+                .dir
+                .path()
+                .join("project/nested/.agents/skills/local/SKILL.md")
+        )
     );
     assert!(
-        rules[&home
-            .dir
-            .path()
-            .join(".codex/skills/.system/bundled/SKILL.md")]
+        !rules.contains_key(
+            &home
+                .dir
+                .path()
+                .join(".codex/skills/.system/bundled/SKILL.md")
+        )
     );
     assert!(!rules.contains_key(&home.dir.path().join("project/.agents/skills/repo/SKILL.md")));
 }
@@ -2433,6 +2440,7 @@ fn codex_discovers_project_codex_skills_and_uses_custom_home() {
     home.skill("custom/skills/selected", "chosen");
     home.skill("custom/skills/.system/bundled", "bundled");
     home.skill(".codex/skills/ignored", "ignored");
+    fs::write(home.dir.path().join("custom/config.toml"), "[[skills.config]]\nname = 'team'\nenabled = false\n[[skills.config]]\nname = 'chosen'\nenabled = false\n").unwrap();
     home.config("[skills.team]\ncodex = 'team'\n[skills.personal]\ncodex = 'chosen'\n");
     let output = home
         .command()
@@ -2477,6 +2485,7 @@ fn codex_symlink_rules_use_the_target_and_directory_fallback_uses_target_name() 
         home.codex_skill_rules(),
         BTreeMap::from([(target.join("SKILL.md"), false)])
     );
+    home.codex_config("[[skills.config]]\nname = 'target-name'\nenabled = false\n");
     let selected = home.run(&["--codex", "--skill", "selected"]);
     assert_eq!(selected.status.code(), Some(0), "{selected:?}");
     assert_eq!(
@@ -2491,7 +2500,7 @@ fn codex_hides_personal_skills_and_force_enables_selected_names_in_one_array() {
     home.skill(".agents/skills/directory", "selected-name");
     home.skill(".codex/skills/other", "other");
     home.config("[skills.team]\nall = 'selected-name'\n");
-    let original = "[[skills.config]]\npath = 'ignored'\nenabled = false\n";
+    let original = "[[skills.config]]\npath = 'ignored'\nenabled = false\n[[skills.config]]\nname = 'selected-name'\nenabled = false\n";
     home.codex_config(original);
     let output = home.run(&["--codex", "--skill", "team"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -2516,6 +2525,11 @@ fn codex_hides_personal_skills_and_force_enables_selected_names_in_one_array() {
 fn claude_native_directory_alias_enables_the_effective_skill_name_once() {
     let home = TestHome::new();
     home.skill(".claude/skills/directory-alias", "effective-name");
+    fs::write(
+        home.dir.path().join(".claude/settings.json"),
+        r#"{"skillOverrides":{"effective-name":"off"}}"#,
+    )
+    .unwrap();
     home.config(
         "[skills.alias]\nclaude = 'directory-alias'\n[skills.name]\nclaude = 'effective-name'\n",
     );
@@ -2602,7 +2616,7 @@ fn claude_dotfiles_repo_keeps_personal_skills_hidden_and_accepts_project_native_
     assert_eq!(
         home.claude_settings()["skillOverrides"],
         serde_json::json!({
-            "personal-name": "off", "project-name": "on"
+            "personal-name": "off"
         })
     );
     assert!(
@@ -2661,10 +2675,7 @@ fn claude_bundled_skills_are_valid_native_bindings_and_never_hidden() {
     home.config("[skills.api]\nclaude = 'claude-api'\n");
     let output = home.run(&["--claude", "--skill", "api"]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        home.claude_settings()["skillOverrides"],
-        serde_json::json!({"claude-api":"on"})
-    );
+    assert!(home.claude_settings().get("skillOverrides").is_none());
 }
 
 #[test]
@@ -3148,7 +3159,10 @@ fn worked_example_skill_and_plugin_rows_resolve_across_user_project_and_local_la
         let trace = String::from_utf8(output.stderr).unwrap();
         assert!(trace.contains("Skill lint:"), "{trace}");
         if model == "opus" {
-            assert!(command.contains(r#""tdd":"on""#), "{command}");
+            assert!(
+                trace.contains("Skill tdd: selected (natively on"),
+                "{trace}"
+            );
             assert!(trace.contains("Skill tdd: explicit (--skill)"), "{trace}");
         } else {
             assert!(command.contains(r#""tdd":"off""#), "{command}");
@@ -3569,10 +3583,14 @@ fn claude_hides_user_installs_without_changing_its_home_or_project_plugins() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
         without_session_id(&String::from_utf8(output.stdout).unwrap()),
-        "claude --settings '{\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"a@m\":false,\"b@m\":false,\"elsewhere@m\":false},\"syncClaudeAiSkills\":false}'\n"
+        "claude --settings '{\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"b@m\":false,\"elsewhere@m\":false},\"syncClaudeAiSkills\":false}'\n"
     );
     let trace = String::from_utf8(output.stderr).unwrap();
-    for id in ["a@m", "b@m", "elsewhere@m"] {
+    assert!(
+        trace.contains("Plugin a@m: hidden (natively off"),
+        "{trace}"
+    );
+    for id in ["b@m", "elsewhere@m"] {
         assert!(
             trace.contains(&format!("Plugin {id}: hidden (unselected user install)")),
             "{trace}"
@@ -3889,7 +3907,7 @@ fn codex_hides_unselected_plugins_and_force_enables_a_disabled_selection() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "codex -c 'plugins.a@m.enabled=true' -c 'plugins.b@m.enabled=false' -c 'plugins={\"c.d@m\"={enabled=false}}' --disable apps\n"
+        "codex -c 'plugins.a@m.enabled=true' -c 'plugins.b@m.enabled=false' --disable apps\n"
     );
     let trace = String::from_utf8(output.stderr).unwrap();
     for id in ["b@m", "c.d@m"] {
@@ -3910,7 +3928,7 @@ fn codex_hides_unselected_plugins_and_force_enables_a_disabled_selection() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
         home.record(),
-        "-c\nplugins.a@m.enabled=true\n-c\nplugins.b@m.enabled=false\n-c\nplugins={\"c.d@m\"={enabled=false}}\n--disable\napps\n-c\nplugins.x.enabled=true\n"
+        "-c\nplugins.a@m.enabled=true\n-c\nplugins.b@m.enabled=false\n--disable\napps\n-c\nplugins.x.enabled=true\n"
     );
     assert_eq!(snapshot(&codex_home), before);
 }
@@ -4068,10 +4086,7 @@ fn codex_reads_only_the_selected_home_for_flags_aliases_and_default_harness() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(
-        home.record(),
-        "-c\nplugins.custom@m.enabled=false\n--disable\napps\n"
-    );
+    assert_eq!(home.record(), "--disable\napps\n");
     assert_eq!(snapshot(&custom), before);
     for args in [
         vec!["--claude", "--dry-run"],
@@ -5258,7 +5273,7 @@ fn dry_run_does_not_write_a_harness_version_cache() {
 #[test]
 fn codex_dotted_plugin_ids_use_inline_tables_and_keep_other_overrides() {
     let home = TestHome::new();
-    home.codex_config("[plugins.'a.b@m']\nenabled = true\n[plugins.'c.d@m']\nenabled = true\n");
+    home.codex_config("[plugins.'a.b@m']\nenabled = false\n[plugins.'c.d@m']\nenabled = false\n");
     home.config("[plugins.first]\ncodex = 'a.b@m'\n[plugins.second]\ncodex = 'c.d@m'\n[plugins.same]\nall = 'a.b@m'\n");
     let output = home.run(&["--codex", "--plugin", "first,second,same", "--dry-run"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -6314,7 +6329,7 @@ fn skill_bindings_replace_as_whole_tables_and_specific_bindings_beat_all() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
         without_session_id(&String::from_utf8(output.stdout).unwrap()),
-        "claude --settings '{\"disableClaudeAiConnectors\":true,\"skillOverrides\":{\"native-lint\":\"on\"},\"syncClaudeAiSkills\":false}'\n"
+        "claude --settings '{\"disableClaudeAiConnectors\":true,\"syncClaudeAiSkills\":false}'\n"
     );
     assert!(
         String::from_utf8(output.stderr)
@@ -6415,7 +6430,7 @@ fn native_skill_aliases_deduplicate_on_claude_and_copilot() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
         without_session_id(&String::from_utf8(output.stdout).unwrap()),
-        "claude --settings '{\"disableClaudeAiConnectors\":true,\"skillOverrides\":{\"tdd\":\"on\"},\"syncClaudeAiSkills\":false}'\n"
+        "claude --settings '{\"disableClaudeAiConnectors\":true,\"syncClaudeAiSkills\":false}'\n"
     );
     let trace = String::from_utf8(output.stderr).unwrap();
     assert_eq!(trace.matches("Skill x:").count(), 1);
@@ -6829,9 +6844,11 @@ fn skill_alias_and_cli_lists_add_and_cli_disables_win() {
     let output = home.run(&["--alias", "work", "--skill", "c", "--dry-run"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let command = String::from_utf8(output.stdout).unwrap();
-    assert!(command.contains(r#""a":"on""#), "{command}");
-    assert!(command.contains(r#""c":"on""#), "{command}");
+    assert!(!command.contains(r#""a":"on""#), "{command}");
+    assert!(!command.contains(r#""c":"on""#), "{command}");
     let trace = String::from_utf8(output.stderr).unwrap();
+    assert!(trace.contains("Skill a: selected (natively on"), "{trace}");
+    assert!(trace.contains("Skill c: selected (natively on"), "{trace}");
     assert!(trace.contains("Skill a: explicit (Alias work)"), "{trace}");
     assert!(trace.contains("Skill b: disabled by Alias work"), "{trace}");
 }
@@ -6852,7 +6869,10 @@ fn skill_defaults_reset_only_farther_layers_and_disables_union() {
     let output = home.run(&["--claude", "--dry-run"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let command = String::from_utf8(output.stdout).unwrap();
-    assert!(command.contains(r#""redefined":"on""#), "{command}");
+    assert!(!command.contains(r#""redefined":"on""#), "{command}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Skill redefined: selected (natively on")
+    );
     for name in ["far", "near", "local"] {
         assert!(
             command.contains(&format!("\"{name}\":\"off\"")),
@@ -6907,7 +6927,13 @@ fn default_native_skills_activate_on_all_harnesses() {
     for harness in ["--claude", "--codex", "--copilot"] {
         let home = TestHome::new();
         home.skill(".claude/skills/tdd", "tdd");
+        fs::write(
+            home.dir.path().join(".claude/settings.json"),
+            r#"{"skillOverrides":{"tdd":"off"}}"#,
+        )
+        .unwrap();
         home.skill(".agents/skills/tdd", "tdd");
+        home.codex_config("[[skills.config]]\nname = 'tdd'\nenabled = false\n");
         home.config("[skills.tdd]\nall = 'tdd'\ndefault = true\n");
         let output = home.run(&[harness]);
         assert_eq!(output.status.code(), Some(0), "{harness}: {output:?}");
@@ -8251,4 +8277,1006 @@ fn copilot_custom_skill_leaks_follow_the_launch_home_including_isolated_settings
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["diagnostics"][0]["cause"], "copilot-custom-skill-dir");
     assert_eq!(json["diagnostics"][0]["item"], "isolated");
+}
+
+#[test]
+fn harness_args_follow_generated_flags_alias_and_passthrough() {
+    let home = TestHome::new();
+    home.config("[harnesses.claude]\nargs = ['--harness-flag', 'value']\n[aliases.work]\nharness = 'claude'\nargs = ['--alias-flag']\n");
+    let output = home.run(&[
+        "--alias",
+        "work",
+        "-m",
+        "sonnet",
+        "--dry-run",
+        "--json",
+        "--",
+        "--typed-flag",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let argv = json["argv"].as_array().unwrap();
+    assert_eq!(
+        &argv[argv.len() - 4..],
+        &["--harness-flag", "value", "--alias-flag", "--typed-flag"]
+    );
+    let output = home.run(&["--alias", "work", "--dry-run"]);
+    let trace = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        trace.contains("--harness-flag") && trace.contains("ayran.toml"),
+        "{trace}"
+    );
+    assert!(trace.contains("--alias-flag (Alias work)"), "{trace}");
+}
+
+#[test]
+fn harness_args_resume_fork_and_persist_suppression() {
+    let home = TestHome::new();
+    home.config("[harnesses.claude]\nargs = ['--old']\n[aliases.work]\nharness = 'claude'\nargs = ['--alias']\n");
+    assert!(
+        home.run(&["--alias", "work", "--", "--once"])
+            .status
+            .success()
+    );
+    home.config("[harnesses.claude]\nargs = ['--new']\n[aliases.work]\nharness = 'claude'\nargs = ['--alias']\n");
+    for fork in [false, true] {
+        let mut args = vec!["resume", "--last", "--dry-run", "--json"];
+        if fork {
+            args.push("--fork");
+        }
+        let output = home.run(&args);
+        assert!(output.status.success(), "{output:?}");
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let argv = json["argv"].as_array().unwrap();
+        assert_eq!(&argv[argv.len() - 2..], &["--new", "--alias"]);
+        assert!(!argv.contains(&serde_json::json!("--once")));
+    }
+    assert!(
+        home.run(&["resume", "--last", "--no-harness-args", "--", "--typed"])
+            .status
+            .success()
+    );
+    assert!(home.raw_record().ends_with("--typed\n"));
+    let output = home.run(&["resume", "--last", "--dry-run", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        !json["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("--new"))
+    );
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.session_path()).unwrap()).unwrap();
+    assert_eq!(record["request"]["no_harness_args"], true);
+}
+
+#[test]
+fn doctor_warns_only_for_managed_flags_in_harness_and_alias_args() {
+    let home = TestHome::new();
+    home.config("[harnesses.claude]\nargs = ['--model=opus', '--effort', 'high']\n[harnesses.codex]\nargs = ['-m', 'gpt-5', '-c', 'model_reasoning_effort=\"high\"']\n[aliases.work]\nharness = 'copilot'\nargs = ['--reasoning-effort=high']\n[aliases.safe]\nharness = 'copilot'\nargs = ['--allow-all', '--model-like']\n");
+    let output = home.run(&["doctor", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let warnings: Vec<_> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "harness-args-overlap")
+        .collect();
+    assert_eq!(warnings.len(), 3, "{json}");
+    assert!(warnings.iter().all(|d| d["severity"] == "warning"));
+}
+
+#[test]
+fn harness_args_private_layers_replace_lists_and_alias_can_drop_harness_args() {
+    let home = TestHome::new();
+    home.config("[harnesses.claude]\nmodel = 'sonnet'\nargs = ['--far']\n[aliases.work]\nharness = 'claude'\nargs = ['--alias']\nharness_args = false\n");
+    fs::write(
+        home.dir.path().join("ayran.local.toml"),
+        "[harnesses.claude]\nargs = ['--near', '--near']\n",
+    )
+    .unwrap();
+    for (args, suffix) in [
+        (
+            vec!["--claude", "--dry-run", "--json"],
+            vec!["--near", "--near"],
+        ),
+        (
+            vec!["--alias", "work", "--dry-run", "--json"],
+            vec!["--alias"],
+        ),
+        (
+            vec![
+                "--alias",
+                "work",
+                "--no-harness-args",
+                "--dry-run",
+                "--json",
+                "--",
+                "--typed",
+            ],
+            vec!["--typed"],
+        ),
+    ] {
+        let output = home.run(&args);
+        assert!(output.status.success(), "{output:?}");
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let argv = json["argv"].as_array().unwrap();
+        assert_eq!(&argv[argv.len() - suffix.len()..], suffix);
+        assert!(!argv.contains(&serde_json::json!("--far")));
+        assert!(argv.contains(&serde_json::json!("sonnet")));
+    }
+    fs::write(
+        home.dir.path().join("ayran.local.toml"),
+        "[harnesses.claude]\nargs = []\n",
+    )
+    .unwrap();
+    assert!(home.run(&["--claude"]).status.success());
+    assert!(!home.record().contains("--far"));
+}
+
+#[test]
+fn harness_args_reject_project_layers_and_invalid_entries() {
+    let home = TestHome::new();
+    fs::write(
+        home.dir.path().join("ayran.toml"),
+        "[harnesses.claude]\nargs = []\n",
+    )
+    .unwrap();
+    for (args, status) in [(vec!["--claude", "--dry-run"], 3), (vec!["doctor"], 1)] {
+        let output = home.run(&args);
+        assert_eq!(output.status.code(), Some(status), "{output:?}");
+        let diagnostics = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(diagnostics.contains("private-layer-only"), "{diagnostics}");
+    }
+    fs::remove_file(home.dir.path().join("ayran.toml")).unwrap();
+    for prefix in ["[harnesses.claude]", "[aliases.work]\nharness = 'claude'"] {
+        for value in ["['']", "['--']", "[1]", "'flag'"] {
+            home.config(&format!("{prefix}\nargs = {value}\n"));
+            let output = home.run(&["--claude", "--dry-run"]);
+            assert_eq!(output.status.code(), Some(3), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("config-invalid"));
+        }
+    }
+}
+
+#[test]
+fn codex_native_off_servers_skip_overrides_but_project_values_keep_them() {
+    let home = TestHome::new();
+    home.codex_config("[mcp_servers.off]\ncommand = 'server'\nenabled = false\n[mcp_servers.on]\ncommand = 'server'\nenabled = true\n[mcp_servers.default]\ncommand = 'server'\n");
+    home.config("[mcp.on]\ncodex = 'on'\n[mcp.default]\ncodex = 'default'\n");
+    let output = home.run(&["--codex", "--mcp", "on,default", "--dry-run", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let args = json["argv"].as_array().unwrap();
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg == "mcp_servers.off.enabled=false"),
+        "{json}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg == "mcp_servers.on.enabled=true"),
+        "{json}"
+    );
+    assert!(
+        args.iter()
+            .any(|arg| arg == "mcp_servers.default.enabled=true"),
+        "{json}"
+    );
+    let trace = home.run(&["--codex", "--mcp", "on,default", "--dry-run"]);
+    assert!(String::from_utf8_lossy(&trace.stderr).contains("hidden (natively off"));
+    let project = home.dir.path().join("project");
+    fs::create_dir_all(project.join(".codex")).unwrap();
+    fs::write(
+        project.join(".codex/config.toml"),
+        "[mcp_servers.off]\nenabled = true\n",
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .current_dir(project)
+        .args(["--codex", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("mcp_servers.off.enabled=false"));
+}
+
+#[test]
+fn doctor_enumerates_codex_profiles_in_harness_and_alias_args() {
+    let home = TestHome::new();
+    home.codex_config("");
+    home.config("[harnesses.codex]\nargs = ['-pwork']\n[aliases.other]\nharness = 'codex'\nargs = ['--profile=other']\n[mcp.work]\ncodex = 'work'\n[mcp.other]\ncodex = 'other'\n");
+    for name in ["work", "other"] {
+        fs::write(
+            home.dir.path().join(format!(".codex/{name}.config.toml")),
+            format!("[mcp_servers.{name}]\ncommand = 'server'\n"),
+        )
+        .unwrap();
+    }
+    let output = home.run(&["doctor", "--codex", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("native-not-found"),
+        "{output:?}"
+    );
+    fs::write(
+        home.dir.path().join(".codex/other.config.toml"),
+        "invalid = [",
+    )
+    .unwrap();
+    let output = home.run(&["doctor", "--codex", "--json"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("enumeration-failed"));
+}
+
+#[test]
+fn codex_profile_spelling_sources_and_suppression_control_native_items() {
+    let home = TestHome::new();
+    home.config("[mcp.connector]\ncodex = { connector = 'selected_app' }\n");
+    home.codex_config("[mcp_servers.base]\ncommand = 'server'\nenabled = false\n");
+    fs::write(home.dir.path().join(".codex/work.config.toml"), "[mcp_servers.base]\nenabled = true\n[mcp_servers.profile]\ncommand = 'server'\nenabled = false\n[apps.profile_app]\nenabled = true\n").unwrap();
+    for flags in [
+        vec!["-p", "work"],
+        vec!["-pwork"],
+        vec!["--profile", "work"],
+        vec!["--profile=work"],
+    ] {
+        let mut args = vec!["--codex", "--mcp", "connector", "--dry-run", "--"];
+        args.extend(flags);
+        let output = home.run(&args);
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let trace = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("mcp_servers.base.enabled=false"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("mcp_servers.profile.enabled=false"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("apps.profile_app.enabled=false"),
+            "{stdout}"
+        );
+        assert!(
+            trace.contains("MCP server profile: hidden (natively off"),
+            "{trace}"
+        );
+    }
+    home.config("[harnesses.codex]\nargs = ['-pwork']\n[aliases.work]\nharness = 'codex'\nargs = ['--profile=work']\n[mcp.profile]\ncodex = 'profile'\n");
+    let output = home.run(&["--codex", "--dry-run"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("mcp_servers.base.enabled=false"));
+    let output = home.run(&[
+        "--codex",
+        "--no-harness-args",
+        "--mcp",
+        "profile",
+        "--dry-run",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("native-not-found"));
+    // Both configured lists name a profile: duplicate flags disable every optimisation.
+    let output = home.run(&["--alias", "work", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("mcp_servers.profile.enabled=false"));
+    home.config("[aliases.work]\nharness = 'codex'\nargs = ['--profile', 'work']\n[mcp.profile]\ncodex = 'profile'\n");
+    let output = home.run(&["--alias", "work", "--mcp", "profile", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("mcp_servers.profile.enabled=true"));
+    let output = home.run(&["--codex", "--dry-run", "--", "-p", "missing"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("mcp_servers.base.enabled=false"));
+    fs::write(
+        home.dir.path().join(".codex/work.config.toml"),
+        "broken = [",
+    )
+    .unwrap();
+    let output = home.run(&["--alias", "work", "--dry-run"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("enumeration-failed"));
+}
+
+#[test]
+fn codex_profile_plugins_use_explicit_state_and_require_an_active_cache() {
+    let home = TestHome::new();
+    home.codex_config("[plugins.'off@m']\nenabled = false\n[plugins.'on@m']\nenabled = true\n[plugins.'default@m']\n");
+    home.config("[plugins.on]\ncodex = 'on@m'\n[plugins.default]\ncodex = 'default@m'\n");
+    let output = home.run(&["--codex", "--plugin", "on,default", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("plugins.off@m.enabled=false"), "{stdout}");
+    assert!(!stdout.contains("plugins.on@m.enabled=true"), "{stdout}");
+    assert!(
+        stdout.contains("plugins.default@m.enabled=true"),
+        "{stdout}"
+    );
+    fs::write(home.dir.path().join(".codex/work.config.toml"), "[plugins.'off@m']\nenabled = true\n[plugins.'on@m']\nenabled = false\n[plugins.'profile@m']\nenabled = true\n[plugins.'stale@m']\nenabled = true\n").unwrap();
+    fs::create_dir_all(home.dir.path().join(".codex/plugins/cache/m/profile/local")).unwrap();
+    let output = home.run(&["--codex", "--dry-run", "--", "-pwork"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("plugins.off@m.enabled=false"), "{stdout}");
+    assert!(!stdout.contains("plugins.on@m.enabled=false"), "{stdout}");
+    assert!(
+        stdout.contains("plugins.profile@m.enabled=false"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("stale@m"), "{stdout}");
+    let project = home.dir.path().join("project");
+    fs::create_dir_all(project.join(".codex")).unwrap();
+    fs::write(
+        project.join(".codex/config.toml"),
+        "[plugins.'off@m']\nenabled = true\n[plugins.'on@m']\nenabled = false\n",
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .current_dir(project)
+        .args(["--codex", "--plugin", "on", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("plugins.off@m.enabled=false"), "{stdout}");
+    assert!(stdout.contains("plugins.on@m.enabled=true"), "{stdout}");
+}
+
+#[test]
+fn codex_skill_rules_use_last_matching_user_and_profile_rule() {
+    let home = TestHome::new();
+    home.skill(".codex/skills/off", "off");
+    home.skill(".codex/skills/on", "on");
+    home.skill("external/profile", "profile");
+    home.config("[skills.on]\ncodex = 'on'\n[skills.off]\ncodex = 'off'\n[skills.profile]\ncodex = 'profile'\n");
+    home.codex_config("[[skills.config]]\nname = 'off'\nenabled = false\n[[skills.config]]\nname = 'on'\nenabled = true\n");
+    let output = home.run(&["--codex", "--skill", "on", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("skills.config="),
+        "{output:?}"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("natively off"));
+    let path = home.dir.path().join("external/profile/SKILL.md");
+    fs::write(home.dir.path().join(".codex/work.config.toml"), format!("[[skills.config]]\nname = 'off'\nenabled = true\n[[skills.config]]\npath = '{}'\nenabled = false\n", path.display())).unwrap();
+    let output = home.run(&["--codex", "--skill", "off,profile", "--", "-pwork"]);
+    assert!(output.status.success(), "{output:?}");
+    let rules = home.codex_skill_rules();
+    assert_eq!(rules.get(&path), Some(&true));
+    assert!(!rules.contains_key(&home.dir.path().join(".codex/skills/off/SKILL.md")));
+    assert_eq!(
+        rules.get(&home.dir.path().join(".codex/skills/on/SKILL.md")),
+        Some(&false)
+    );
+    let output = home.run(&["--codex", "--skill", "profile", "--dry-run"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("native-not-found"));
+    // Ambiguous profiles retain both selected-on and unselected-off rules.
+    let output = home.run(&["--codex", "--skill", "on", "--", "-pwork", "-pmissing"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(home.codex_skill_rules().len(), 3);
+}
+
+#[test]
+fn codex_skill_native_proof_ignores_directory_and_ambiguous_selectors() {
+    let home = TestHome::new();
+    home.skill(".codex/skills/one", "one");
+    home.skill(".codex/skills/two", "two");
+    home.codex_config(&format!("[[skills.config]]\npath = '{}'\nenabled = false\n[[skills.config]]\npath = '{}'\nname = 'two'\nenabled = false\n", home.dir.path().join(".codex/skills/one").display(), home.dir.path().join(".codex/skills/two/SKILL.md").display()));
+    let output = home.run(&["--codex"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(home.codex_skill_rules().len(), 2);
+    assert!(home.codex_skill_rules().values().all(|enabled| !enabled));
+}
+
+#[test]
+fn codex_profile_servers_join_definition_and_project_and_plugin_collisions() {
+    let home = TestHome::new();
+    home.codex_config("");
+    fs::write(
+        home.dir.path().join(".codex/work.config.toml"),
+        "[mcp_servers.shared]\ncommand = 'server'\n[plugins.'plugin@m']\nenabled = true\n",
+    )
+    .unwrap();
+    let plugin = home.dir.path().join(".codex/plugins/cache/m/plugin/local");
+    fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+    fs::write(
+        plugin.join(".codex-plugin/plugin.json"),
+        r#"{"mcpServers":{"shared":{"command":"server"}}}"#,
+    )
+    .unwrap();
+    home.config("[mcp.shared]\ncodex = { command = 'definition' }\n");
+    let output = home.run(&["--codex", "--mcp", "shared", "--dry-run", "--", "-pwork"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("mcp-definition-collision"));
+    home.config("[plugins.plugin]\ncodex = 'plugin@m'\n");
+    let output = home.run(&["--codex", "--plugin", "plugin", "--dry-run", "--", "-pwork"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("plugin-server-shadow"));
+    let project = home.dir.path().join("project");
+    fs::create_dir_all(project.join(".codex")).unwrap();
+    fs::write(
+        project.join(".codex/config.toml"),
+        "[mcp_servers.shared]\ncommand = 'project'\n",
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .current_dir(project)
+        .args(["--codex", "--dry-run", "--", "-pwork"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("mcp-project-shadow"));
+}
+
+#[test]
+fn codex_profile_root_markers_cannot_hide_an_ancestor_enabled_override() {
+    let home = TestHome::new();
+    home.codex_config("[mcp_servers.off]\ncommand = 'server'\nenabled = false\n");
+    fs::write(
+        home.dir.path().join(".codex/work.config.toml"),
+        "project_root_markers = ['.parentmarker']\n",
+    )
+    .unwrap();
+    let parent = home.dir.path().join("parent");
+    let project = parent.join("repo");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::write(parent.join(".parentmarker"), "").unwrap();
+    fs::write(project.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+    fs::create_dir_all(parent.join(".codex")).unwrap();
+    fs::write(
+        parent.join(".codex/config.toml"),
+        "[mcp_servers.off]\nenabled = true\n",
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .current_dir(project)
+        .args(["--codex", "--dry-run", "--", "-pwork"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("mcp_servers.off.enabled=false"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn claude_skips_only_proven_plugin_overrides_after_merging_settings() {
+    let home = TestHome::new();
+    home.config("[plugins.selected]\nclaude = 'selected@m'\n");
+    home.claude_installs(r#"{"version":2,"plugins":{"off@m":[{"scope":"user"}],"project@m":[{"scope":"user"}],"local@m":[{"scope":"user"}],"absent@m":[{"scope":"user"}],"selected@m":[{"scope":"user"}]}}"#);
+    let custom = home.dir.path().join("custom-claude");
+    fs::create_dir_all(&custom).unwrap();
+    fs::copy(
+        home.dir
+            .path()
+            .join(".claude/plugins/installed_plugins.json"),
+        {
+            fs::create_dir_all(custom.join("plugins")).unwrap();
+            custom.join("plugins/installed_plugins.json")
+        },
+    )
+    .unwrap();
+    fs::write(
+        custom.join("settings.json"),
+        r#"{"enabledPlugins":{"off@m":false,"project@m":false,"local@m":false,"selected@m":true}}"#,
+    )
+    .unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.json"),
+        r#"{"enabledPlugins":{"project@m":true}}"#,
+    )
+    .unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.local.json"),
+        r#"{"enabledPlugins":{"local@m":true}}"#,
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", &custom)
+        .args(["--claude", "--plugin", "selected"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings()["enabledPlugins"],
+        serde_json::json!({"absent@m":false,"project@m":false,"local@m":false})
+    );
+    let trace = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", &custom)
+        .args(["--claude", "--plugin", "selected", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(trace.status.success(), "{trace:?}");
+    let trace = String::from_utf8_lossy(&trace.stderr);
+    assert!(
+        trace.contains("Plugin off@m: hidden (natively off"),
+        "{trace}"
+    );
+    assert!(
+        trace.contains("Plugin selected@m: selected (natively on"),
+        "{trace}"
+    );
+}
+
+#[test]
+fn claude_skips_skill_overrides_only_for_exact_native_states() {
+    let home = TestHome::new();
+    for name in [
+        "off",
+        "partial",
+        "invocable",
+        "project",
+        "selected",
+        "default",
+        "unknown",
+    ] {
+        home.skill(&format!(".claude/skills/{name}"), name);
+    }
+    home.config("[skills.selected]\nclaude = 'selected'\n[skills.default]\nclaude = 'default'\n[skills.unknown]\nclaude = 'unknown'\n");
+    let custom = home.dir.path().join("custom-claude");
+    fs::create_dir_all(&custom).unwrap();
+    std::os::unix::fs::symlink(
+        home.dir.path().join(".claude/skills"),
+        custom.join("skills"),
+    )
+    .unwrap();
+    fs::write(custom.join("settings.json"), r#"{"skillOverrides":{"off":"off","partial":"name-only","invocable":"user-invocable-only","project":"off","selected":"off","unknown":null}}"#).unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.json"),
+        r#"{"skillOverrides":{"project":"on","selected":"on"}}"#,
+    )
+    .unwrap();
+    let args = [
+        "--claude", "--skill", "selected", "--skill", "default", "--skill", "unknown",
+    ];
+    let output = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", &custom)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings()["skillOverrides"],
+        serde_json::json!({"partial":"off","invocable":"off","project":"off","unknown":"on"})
+    );
+    let trace = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", &custom)
+        .args(args)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert!(trace.status.success(), "{trace:?}");
+    let trace = String::from_utf8_lossy(&trace.stderr);
+    for expected in [
+        "Skill off: hidden (natively off",
+        "Skill selected: selected (natively on",
+        "Skill default: selected (natively on",
+    ] {
+        assert!(trace.contains(expected), "{trace}");
+    }
+    let output = home.run(&[
+        "--claude", "--skill", "default", "--skill", "selected", "--skill", "unknown",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    // Default-on selected Skills need no entries, while unselected Skills remain hidden.
+    assert_eq!(
+        home.claude_settings()["skillOverrides"],
+        serde_json::json!({"off":"off","partial":"off","invocable":"off","project":"off"})
+    );
+}
+
+#[test]
+fn claude_skips_native_mcp_denies_from_toggles_and_all_settings_layers() {
+    let home = TestHome::new();
+    let custom = home.dir.path().join("custom-claude");
+    fs::create_dir_all(&custom).unwrap();
+    fs::create_dir_all(home.dir.path().join(".git")).unwrap();
+    fs::create_dir_all(home.dir.path().join(".claude")).unwrap();
+    let servers = serde_json::json!({"mcpServers":{"toggle":{"command":"test"},"user":{"command":"test"},"project":{"command":"test"},"local":{"command":"test"},"command":{"command":"test"},"url":{"url":"https://example.com"},"allowed":{"command":"test"}},"projects":{home.dir.path().to_string_lossy().as_ref():{"disabledMcpServers":["toggle"]}}});
+    fs::write(custom.join(".claude.json"), servers.to_string()).unwrap();
+    fs::write(custom.join("settings.json"), r#"{"deniedMcpServers":[{"serverName":"user"},{"serverCommand":["test"]},{"serverUrl":"https://example.com"}],"allowedMcpServers":[{"serverName":"allowed"}]}"#).unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.json"),
+        r#"{"deniedMcpServers":[{"serverName":"project"}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.local.json"),
+        r#"{"deniedMcpServers":[{"serverName":"local"}]}"#,
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", &custom)
+        .arg("--claude")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings()["deniedMcpServers"],
+        serde_json::json!([{"serverName":"allowed"},{"serverName":"command"},{"serverName":"url"}])
+    );
+    let trace = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", &custom)
+        .args(["--claude", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(trace.status.success(), "{trace:?}");
+    let trace = String::from_utf8_lossy(&trace.stderr);
+    for name in ["toggle", "user", "project", "local"] {
+        assert!(
+            trace.contains(&format!("MCP server {name}: hidden (natively off")),
+            "{trace}"
+        );
+    }
+}
+
+#[test]
+fn claude_omits_empty_override_keys_and_preserves_overrides_with_extra_settings() {
+    let home = TestHome::new();
+    home.config(
+        "[skills.selected]\nclaude = 'selected'\n[plugins.selected]\nclaude = 'selected@m'\n",
+    );
+    home.skill(".claude/skills/selected", "selected");
+    home.skill(".claude/skills/hidden", "hidden");
+    home.claude_installs(r#"{"version":2,"plugins":{"hidden@m":[{"scope":"user"}],"selected@m":[{"scope":"user"}]}}"#);
+    fs::write(home.dir.path().join(".claude/settings.json"), r#"{"enabledPlugins":{"hidden@m":false,"selected@m":true},"skillOverrides":{"hidden":"off","selected":"on"},"deniedMcpServers":[{"serverName":"server"}]}"#).unwrap();
+    fs::write(
+        home.dir.path().join(".claude.json"),
+        r#"{"mcpServers":{"server":{"command":"test"}}}"#,
+    )
+    .unwrap();
+    let args = ["--claude", "--skill", "selected", "--plugin", "selected"];
+    let output = home.run(&args);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings(),
+        serde_json::json!({"disableClaudeAiConnectors":true,"syncClaudeAiSkills":false})
+    );
+    let full = serde_json::json!({"disableClaudeAiConnectors":true,"syncClaudeAiSkills":false,"enabledPlugins":{"hidden@m":false,"selected@m":true},"skillOverrides":{"hidden":"off","selected":"on"},"deniedMcpServers":[{"serverName":"server"}]});
+    for extra in [vec!["--settings", "{}"], vec!["--settings={}"]] {
+        let mut passthrough = args.to_vec();
+        passthrough.push("--");
+        passthrough.extend(extra);
+        let output = home.run(&passthrough);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(home.claude_settings(), full);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("natively "));
+    }
+    home.config("[harnesses.claude]\nargs = ['--settings={}' ]\n[skills.selected]\nclaude = 'selected'\n[plugins.selected]\nclaude = 'selected@m'\n");
+    let output = home.run(&args);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(home.claude_settings(), full);
+    let mut without_args = args.to_vec();
+    without_args.push("--no-harness-args");
+    let output = home.run(&without_args);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings(),
+        serde_json::json!({"disableClaudeAiConnectors":true,"syncClaudeAiSkills":false})
+    );
+}
+
+#[test]
+fn claude_keeps_overrides_when_native_settings_are_uncertain() {
+    let home = TestHome::new();
+    home.skill(".claude/skills/selected", "selected");
+    home.claude_installs(r#"{"version":2,"plugins":{"hidden@m":[{"scope":"user"}]}}"#);
+    home.config("[skills.selected]\nclaude = 'selected'\n");
+    let settings = home.dir.path().join(".claude/settings.json");
+    for contents in [
+        r#"{"enabledPlugins":{"hidden@m":null},"skillOverrides":{"selected":null}}"#,
+        r#"{"enabledPlugins":[],"skillOverrides":{"selected":"on"}}"#,
+        r#"{"enabledPlugins":{"hidden@m":false},"skillOverrides":[]}"#,
+        r#"{"enabledPlugins":{"hidden@m":false},"deniedMcpServers":{}}"#,
+    ] {
+        fs::write(&settings, contents).unwrap();
+        let output = home.run(&["--claude", "--skill", "selected"]);
+        assert!(output.status.success(), "{contents}: {output:?}");
+        assert_eq!(
+            home.claude_settings()["enabledPlugins"],
+            serde_json::json!({"hidden@m":false})
+        );
+        assert_eq!(
+            home.claude_settings()["skillOverrides"],
+            serde_json::json!({"selected":"on"})
+        );
+    }
+    fs::write(&settings, "{").unwrap();
+    let output = home.run(&["--claude", "--dry-run"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("enumeration-failed"));
+    fs::remove_file(&settings).unwrap();
+    fs::create_dir(&settings).unwrap();
+    let output = home.run(&["--claude", "--dry-run"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("enumeration-failed"));
+}
+
+#[test]
+fn claude_preserves_overrides_when_nested_local_settings_paths_are_uncertain() {
+    let home = TestHome::new();
+    home.claude_installs(
+        r#"{"version":2,"plugins":{"hidden@m":[{"scope":"user"}],"off@m":[{"scope":"user"}]}}"#,
+    );
+    fs::create_dir_all(home.dir.path().join(".git")).unwrap();
+    fs::create_dir_all(home.dir.path().join("nested/.claude")).unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.local.json"),
+        r#"{"enabledPlugins":{"hidden@m":true,"off@m":false}}"#,
+    )
+    .unwrap();
+    fs::write(
+        home.dir.path().join("nested/.claude/settings.json"),
+        r#"{"enabledPlugins":{"hidden@m":false,"off@m":true}}"#,
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .current_dir(home.dir.path().join("nested"))
+        .arg("--claude")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings()["enabledPlugins"],
+        serde_json::json!({"hidden@m":false,"off@m":false})
+    );
+}
+
+#[test]
+fn claude_does_not_use_parent_project_settings_as_native_off_proof() {
+    let home = TestHome::new();
+    home.claude_installs(r#"{"version":2,"plugins":{"hidden@m":[{"scope":"user"}]}}"#);
+    home.skill(".claude/skills/selected", "selected");
+    home.config("[skills.selected]\nclaude = 'selected'\n");
+    fs::create_dir_all(home.dir.path().join(".git")).unwrap();
+    fs::create_dir_all(home.dir.path().join("nested")).unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.json"),
+        r#"{"enabledPlugins":{"hidden@m":false},"skillOverrides":{"selected":"off"}}"#,
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .current_dir(home.dir.path().join("nested"))
+        .args(["--claude", "--skill", "selected"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // The user file still applies, even though it is also a parent project file.
+    assert!(home.claude_settings().get("enabledPlugins").is_none());
+    assert_eq!(
+        home.claude_settings()["skillOverrides"],
+        serde_json::json!({"selected":"on"})
+    );
+    let custom = home.dir.path().join("custom-claude");
+    fs::create_dir_all(custom.join("plugins")).unwrap();
+    fs::copy(
+        home.dir
+            .path()
+            .join(".claude/plugins/installed_plugins.json"),
+        custom.join("plugins/installed_plugins.json"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        home.dir.path().join(".claude/skills"),
+        custom.join("skills"),
+    )
+    .unwrap();
+    let output = home
+        .command()
+        .env("CLAUDE_CONFIG_DIR", custom)
+        .current_dir(home.dir.path().join("nested"))
+        .args(["--claude", "--skill", "selected"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings()["enabledPlugins"],
+        serde_json::json!({"hidden@m":false})
+    );
+    assert!(home.claude_settings().get("skillOverrides").is_none());
+}
+
+#[test]
+fn claude_preserves_overrides_when_worktree_local_settings_paths_are_uncertain() {
+    let home = TestHome::new();
+    home.claude_installs(r#"{"version":2,"plugins":{"hidden@m":[{"scope":"user"}]}}"#);
+    home.skill(".claude/skills/selected", "selected");
+    home.config("[skills.selected]\nclaude = 'selected'\n");
+    fs::write(
+        home.dir.path().join(".git"),
+        "gitdir: /some/main/checkout/.git/worktrees/fixture\n",
+    )
+    .unwrap();
+    fs::write(
+        home.dir.path().join(".claude/settings.json"),
+        r#"{"enabledPlugins":{"hidden@m":false},"skillOverrides":{"selected":"on"}}"#,
+    )
+    .unwrap();
+    let output = home.run(&["--claude", "--skill", "selected"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        home.claude_settings()["enabledPlugins"],
+        serde_json::json!({"hidden@m":false})
+    );
+    assert_eq!(
+        home.claude_settings()["skillOverrides"],
+        serde_json::json!({"selected":"on"})
+    );
+}
+
+#[test]
+fn copilot_mcp_natively_off_user_server_omits_hide_and_keeps_trace() {
+    let home = TestHome::new();
+    let directory = home.dir.path().join(".copilot");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("mcp-config.json"),
+        r#"{"mcpServers":{"off":{"command":"test"},"other":{"command":"test"}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        directory.join("settings.json"),
+        r#"{"disabledMcpServers":["off"]}"#,
+    )
+    .unwrap();
+    let output = home.run(&["--copilot", "--dry-run", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let args = dry["argv"].as_array().unwrap();
+    assert!(
+        !args
+            .windows(2)
+            .any(|pair| pair[0] == "--disable-mcp-server" && pair[1] == "off")
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair[0] == "--disable-mcp-server" && pair[1] == "other")
+    );
+    let trace = home.run(&["--copilot", "--dry-run"]);
+    assert!(
+        String::from_utf8_lossy(&trace.stderr).contains("MCP server off: hidden (natively off")
+    );
+}
+
+#[test]
+fn copilot_mcp_explicit_enable_preserves_hide_for_natively_off_server() {
+    for source in [
+        "harness",
+        "alias",
+        "passthrough",
+        "equals",
+        "no-harness-args",
+    ] {
+        let home = TestHome::new();
+        let directory = home.dir.path().join(".copilot");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("mcp-config.json"),
+            r#"{"mcpServers":{"off":{"command":"test"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.join("settings.json"),
+            r#"{"disabledMcpServers":["off"]}"#,
+        )
+        .unwrap();
+        let config = match source {
+            "harness" | "no-harness-args" => {
+                "[harnesses.copilot]\nargs = ['--enable-mcp-server', 'off']\n"
+            }
+            "alias" => {
+                "[aliases.work]\nharness = 'copilot'\nargs = ['--enable-mcp-server', 'off']\n"
+            }
+            _ => "",
+        };
+        home.config(config);
+        let args = match source {
+            "alias" => vec!["--alias", "work", "--dry-run", "--json"],
+            "passthrough" => vec![
+                "--copilot",
+                "--dry-run",
+                "--json",
+                "--",
+                "--enable-mcp-server",
+                "off",
+            ],
+            "equals" => vec![
+                "--copilot",
+                "--dry-run",
+                "--json",
+                "--",
+                "--enable-mcp-server=off",
+            ],
+            "no-harness-args" => vec!["--copilot", "--no-harness-args", "--dry-run", "--json"],
+            _ => vec!["--copilot", "--dry-run", "--json"],
+        };
+        let output = home.run(&args);
+        assert!(output.status.success(), "{source}: {output:?}");
+        let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            dry["argv"]
+                .as_array()
+                .unwrap()
+                .windows(2)
+                .any(|pair| pair[0] == "--disable-mcp-server" && pair[1] == "off"),
+            source != "no-harness-args",
+            "{source}: {dry}"
+        );
+    }
+}
+
+#[test]
+fn copilot_mcp_selected_server_enables_only_when_user_or_repo_settings_disable_it() {
+    for settings in [
+        None,
+        Some(".copilot/settings.json"),
+        Some("repo/.github/copilot/settings.json"),
+        Some("repo/.github/copilot/settings.local.json"),
+    ] {
+        let home = TestHome::new();
+        home.config("[mcp.selected]\ncopilot = 'selected'\n");
+        let directory = home.dir.path().join(".copilot");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("mcp-config.json"), r#"{"mcpServers":{"selected":{"command":"test","enabled":false,"disabled":true},"repo_off":{"command":"test"}}}"#).unwrap();
+        let repo = home.dir.path().join("repo");
+        let nested = repo.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(repo.join(".git")).unwrap();
+        if let Some(relative) = settings {
+            let path = home.dir.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, r#"{"disabledMcpServers":["selected","repo_off"]}"#).unwrap();
+        }
+        let output = home
+            .command()
+            .current_dir(&nested)
+            .args(["--copilot", "--mcp", "selected", "--dry-run", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{settings:?}: {output:?}");
+        let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let args = dry["argv"].as_array().unwrap();
+        assert_eq!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--enable-mcp-server" && pair[1] == "selected"),
+            settings.is_some(),
+            "{settings:?}: {dry}"
+        );
+        if settings != Some(".copilot/settings.json") {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "--disable-mcp-server" && pair[1] == "repo_off"),
+                "{dry}"
+            );
+        }
+        if settings.is_none() {
+            let trace = home
+                .command()
+                .current_dir(&nested)
+                .args(["--copilot", "--mcp", "selected", "--dry-run"])
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&trace.stderr).contains("MCP server selected: natively on")
+            );
+        }
+    }
 }

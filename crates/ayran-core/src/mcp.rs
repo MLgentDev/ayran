@@ -279,6 +279,14 @@ fn parse_binding(
 pub struct McpState {
     /// User and user-private local servers active for this working directory.
     pub user: BTreeSet<String>,
+    /// Proven effective Codex user/profile values.
+    pub codex_enabled: BTreeMap<String, bool>,
+    /// Claude names proven off by native settings or per-project toggles.
+    pub claude_off: BTreeSet<String>,
+    /// Copilot user settings disables, which can prove a hide redundant.
+    pub copilot_user_off: BTreeSet<String>,
+    /// Copilot repository disables, read conservatively regardless of trust.
+    pub copilot_project_off: BTreeSet<String>,
     /// Project servers, including those awaiting trust approval.
     pub project: BTreeSet<String>,
     pub disabled: BTreeSet<String>,
@@ -503,13 +511,27 @@ pub(crate) fn resolve<'a>(
                 }
                 let newly_selected = selected_native.insert(native.clone());
                 if newly_selected && harness == Harness::Codex && !account_connector {
-                    result
-                        .overrides
-                        .push(codex_enabled("mcp_servers", native, true));
+                    if state.codex_enabled.get(native) == Some(&true) {
+                        result.trace.push(format!(
+                            "MCP server {native}: natively on (no override needed)"
+                        ));
+                    } else {
+                        result
+                            .overrides
+                            .push(codex_enabled("mcp_servers", native, true));
+                    }
                 } else if newly_selected && harness == Harness::Copilot {
-                    result
-                        .args
-                        .extend(["--enable-mcp-server".into(), native.clone()]);
+                    if state.copilot_user_off.contains(native)
+                        || state.copilot_project_off.contains(native)
+                    {
+                        result
+                            .args
+                            .extend(["--enable-mcp-server".into(), native.clone()]);
+                    } else {
+                        result.trace.push(format!(
+                            "MCP server {native}: natively on (no override needed)"
+                        ));
+                    }
                 } else if newly_selected
                     && harness == Harness::Claude
                     && state.disabled.contains(native)
@@ -647,6 +669,7 @@ pub(crate) fn resolve<'a>(
             }
         }
     }
+    let trailing_args = request.trailing_args(layers, harness);
     if matches!(harness, Harness::Codex | Harness::Copilot) {
         for native in state.user.difference(&selected_native) {
             if harness == Harness::Copilot
@@ -685,6 +708,22 @@ pub(crate) fn resolve<'a>(
                 });
                 result.trace.push(format!(
                     "MCP server {native}: left visible (plugin-server-shadow)"
+                ));
+                continue;
+            }
+            let copilot_off = harness == Harness::Copilot
+                && state.copilot_user_off.contains(native)
+                && !trailing_args.iter().enumerate().any(|(index, arg)| {
+                    arg.to_str() == Some(format!("--enable-mcp-server={native}").as_str())
+                        || (arg == "--enable-mcp-server"
+                            && trailing_args.get(index + 1).and_then(|arg| arg.to_str())
+                                == Some(native.as_str()))
+                });
+            if (harness == Harness::Codex && state.codex_enabled.get(native) == Some(&false))
+                || copilot_off
+            {
+                result.trace.push(format!(
+                    "MCP server {native}: hidden (natively off, no override needed)"
                 ));
                 continue;
             }
@@ -728,10 +767,16 @@ pub(crate) fn resolve<'a>(
                     "MCP server {native}: left visible (mcp-project-shadow)"
                 ));
             } else {
-                result.denied.push(native.clone());
-                result.trace.push(format!(
-                    "MCP server {native}: hidden (unselected user/local server)"
-                ));
+                if state.claude_off.contains(native) {
+                    result.trace.push(format!(
+                        "MCP server {native}: hidden (natively off, no override needed)"
+                    ));
+                } else {
+                    result.denied.push(native.clone());
+                    result.trace.push(format!(
+                        "MCP server {native}: hidden (unselected user/local server)"
+                    ));
+                }
             }
         }
         if !project_shadows.is_empty() {

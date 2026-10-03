@@ -35,6 +35,9 @@ pub fn summary(request: &Request) -> String {
             words.push(crate::shell_quote(values.join(",").as_ref()));
         }
     }
+    if request.no_harness_args {
+        words.push("--no-harness-args".into());
+    }
     if request.no_defaults {
         words.push("--no-defaults".into());
     }

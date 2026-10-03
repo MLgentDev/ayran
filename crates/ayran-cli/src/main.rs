@@ -1,6 +1,8 @@
+mod claude_config;
 mod cli;
 mod codex_config;
 mod codex_link;
+mod codex_plugin_write;
 mod codex_skill_enumeration;
 mod completion;
 mod config_command;
@@ -10,9 +12,16 @@ mod doctor_command;
 mod generated_cache;
 mod harness_home;
 mod harness_version;
+mod install_command;
+mod install_plan;
+mod install_write;
 mod list_command;
+mod marketplace_list;
+mod marketplace_state;
 mod mcp_activation;
 mod mcp_enumeration;
+mod native_command;
+mod native_plugins;
 mod plugin_contents;
 mod plugin_enumeration;
 mod session_command;
@@ -20,6 +29,7 @@ mod session_list;
 mod session_store;
 mod skill_activation;
 mod skill_enumeration;
+mod trust;
 mod update_command;
 
 use std::env;
@@ -84,6 +94,15 @@ fn run() -> i32 {
     }
     if let Some(("update", update)) = matches.subcommand() {
         return update_command::run(update);
+    }
+    if let Some(("install", install)) = matches.subcommand() {
+        return install_command::run(install);
+    }
+    if let Some(("trust", trust)) = matches.subcommand() {
+        return trust::run(trust);
+    }
+    if let Some(("native", native)) = matches.subcommand() {
+        std::process::exit(native_command::run(native));
     }
     if let Some(("doctor", doctor)) = matches.subcommand() {
         return doctor_command::run(doctor);
@@ -226,6 +245,7 @@ fn run() -> i32 {
             .map(|values| values.cloned().collect())
             .unwrap_or_default(),
         no_defaults: matches.get_flag("no-defaults"),
+        no_harness_args: matches.get_flag("no-harness-args"),
         passthrough: matches
             .get_many::<OsString>("passthrough")
             .map(|values| values.cloned().collect())
@@ -271,7 +291,8 @@ fn run() -> i32 {
                     _ => None,
                 }
             });
-            installed.paths = plugin_enumeration::copilot_native_paths(&shared.directory, bindings);
+            installed.paths = plugin_enumeration::copilot_native_paths(&shared.directory, bindings)
+                .map_err(|diagnostic| vec![diagnostic])?;
         }
         if !installed.direct.is_empty() {
             let selected_paths = layers.plugins.values().filter_map(|plugin| {
@@ -308,6 +329,27 @@ fn run() -> i32 {
         } else {
             copilot_mcp_enumeration::read(home).map_err(|diagnostic| vec![diagnostic])?
         };
+        if harness == Harness::Claude {
+            claude_config::apply(
+                home,
+                &request.trailing_args(&layers, harness),
+                &mut installed,
+                &mut skills,
+                &mut mcp,
+            )
+            .map_err(|diagnostic| vec![diagnostic])?;
+        } else if harness == Harness::Codex {
+            let profiles = codex_config::profiles(&request.trailing_args(&layers, harness));
+            codex_config::apply(
+                home,
+                real_home.as_deref(),
+                &profiles,
+                &mut installed,
+                &mut skills,
+                &mut mcp,
+            )
+            .map_err(|diagnostic| vec![diagnostic])?;
+        }
         let plan = resolve(request.clone(), &layers, &installed, &skills, &mcp)?;
         let plan = if harness == Harness::Codex && !plan.native_plugins.is_empty() {
             // Resolve selections before reading payloads: unselected Plugins are irrelevant.
@@ -478,6 +520,7 @@ fn run() -> i32 {
             .chain(&plan.trace.plugins)
             .chain(&plan.trace.skills)
             .chain(&plan.mcp.trace)
+            .chain(&plan.trace.harness_args)
         {
             eprintln!("{entry}");
         }

@@ -292,13 +292,13 @@ fn same_path(left: &Path, right: &Path) -> Result<bool, Diagnostic> {
 fn template(scope: Scope) -> &'static str {
     match scope {
         Scope::User => {
-            "# User layer: settings for every directory.\n# default_harness = \"codex\"\n#\n# [harnesses.codex]\n# model = \"gpt-5\"\n# effort = \"high\"\n# home = \"isolated\"\n#\n# [aliases.work]\n# harness = \"codex\"\n# model = \"gpt-5\"\n# effort = \"high\"\n# description = \"My coding session\"\n#\n# Re-evaluate ayran activate after adding or removing Aliases.\n"
+            "# User layer: settings for every directory.\n# default_harness = \"codex\"\n#\n# [harnesses.codex]\n# model = \"gpt-5\"\n# effort = \"high\"\n# home = \"isolated\"\n#\n# [harnesses.copilot]\n# args = [\"--no-experimental\", \"--allow-all\"]\n#\n# [aliases.work]\n# harness = \"codex\"\n# model = \"gpt-5\"\n# effort = \"high\"\n# description = \"My coding session\"\n#\n# Re-evaluate ayran activate after adding or removing Aliases.\n"
         }
         Scope::Project => {
             "# Project layer: shared settings for this directory.\n# default_harness = \"codex\"\n#\n# [harnesses.codex]\n# model = \"gpt-5\"\n# effort = \"high\"\n#\n# [harnesses.claude]\n# model = \"sonnet\"\n# effort = \"high\"\n#\n# [harnesses.copilot]\n# effort = \"medium\"\n#\n# Nearer Config layers override these settings.\n"
         }
         Scope::Local => {
-            "# Local layer: private settings; add this file to .gitignore.\n# [harnesses.codex]\n# effort = \"high\"\n# model = \"gpt-5\"\n#\n# [harnesses.claude]\n# effort = \"high\"\n#\n# [harnesses.copilot]\n# effort = \"medium\"\n#\n# Models and effort override the project layer.\n# Aliases belong in the user layer.\n#\n# This layer takes precedence over the project layer beside it.\n"
+            "# Local layer: private settings; add this file to .gitignore.\n# [harnesses.codex]\n# effort = \"high\"\n# model = \"gpt-5\"\n#\n# [harnesses.claude]\n# effort = \"high\"\n#\n# [harnesses.copilot]\n# effort = \"medium\"\n# args = [\"--no-experimental\", \"--allow-all\"]\n#\n# Models and effort override the project layer.\n# Aliases belong in the user layer.\n#\n# This layer takes precedence over the project layer beside it.\n"
         }
     }
 }

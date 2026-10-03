@@ -14,6 +14,7 @@ pub struct Sourced<T> {
 
 #[derive(Default)]
 pub struct HarnessSettings {
+    pub args: Option<Sourced<Vec<String>>>,
     pub model: Option<Sourced<String>>,
     pub effort: Option<Sourced<Effort>>,
     /// User-level choice of a separate, ayran-owned Harness home.
@@ -21,6 +22,8 @@ pub struct HarnessSettings {
 }
 
 pub struct Alias {
+    pub args: Vec<String>,
+    pub harness_args: bool,
     pub harness: Harness,
     pub model: Option<String>,
     pub effort: Option<Effort>,
@@ -108,6 +111,7 @@ pub struct ConfigLayers {
     pub copilot: HarnessSettings,
     pub aliases: BTreeMap<String, Alias>,
     pub plugins: BTreeMap<String, Sourced<Plugin>>,
+    pub marketplaces: BTreeMap<String, Sourced<crate::marketplace::Marketplace>>,
     pub skills: BTreeMap<String, Sourced<Skill>>,
     pub mcp: BTreeMap<String, Sourced<crate::mcp::McpServer>>,
     pub profiles: BTreeMap<String, Sourced<Profile>>,
@@ -188,6 +192,7 @@ impl ConfigLayers {
         self.disabled_plugins.extend(nearer.disabled_plugins);
         self.disabled_profiles.extend(nearer.disabled_profiles);
         self.plugins.extend(nearer.plugins);
+        self.marketplaces.extend(nearer.marketplaces);
         for name in nearer.skills.keys() {
             self.disabled_default_skills.remove(name);
         }
@@ -210,6 +215,9 @@ impl ConfigLayers {
             (&mut self.codex, nearer.codex),
             (&mut self.copilot, nearer.copilot),
         ] {
+            if nearer.args.is_some() {
+                farther.args = nearer.args;
+            }
             if nearer.model.is_some() {
                 farther.model = nearer.model;
             }
@@ -298,6 +306,34 @@ impl ConfigLayers {
                                         path: path.to_path_buf(),
                                     })
                                 }
+                                "args" => {
+                                    if !is_user
+                                        && path
+                                            .file_name()
+                                            .is_none_or(|name| name != "ayran.local.toml")
+                                    {
+                                        report(
+                                            Diagnostic::error(
+                                                "private-layer-only",
+                                                format!(
+                                                    "{}: harnesses.{name}.args is only allowed in user or local config",
+                                                    path.display()
+                                                ),
+                                                None,
+                                            ),
+                                            diagnostics,
+                                            collect,
+                                        )?;
+                                    }
+                                    settings.args = Some(Sourced {
+                                        value: parse_args(
+                                            value,
+                                            path,
+                                            &format!("harnesses.{name}.args"),
+                                        )?,
+                                        path: path.to_path_buf(),
+                                    });
+                                }
                                 "home" if !is_user => {
                                     report(user_level_only(path, "home"), diagnostics, collect)?;
                                 }
@@ -354,6 +390,8 @@ impl ConfigLayers {
                         let mut mcp = Vec::new();
                         let mut profiles = Vec::new();
                         let mut defaults = true;
+                        let mut args = Vec::new();
+                        let mut harness_args = true;
                         let mut disabled = Disable::default();
                         for (field, value) in fields {
                             match field.as_str() {
@@ -407,6 +445,16 @@ impl ConfigLayers {
                                         &format!("aliases.{name}.profiles"),
                                     )?
                                 }
+                                "args" => {
+                                    args = parse_args(value, path, &format!("aliases.{name}.args"))?
+                                }
+                                "harness_args" => {
+                                    harness_args = parse_bool(
+                                        value,
+                                        path,
+                                        &format!("aliases.{name}.harness_args"),
+                                    )?
+                                }
                                 "defaults" => {
                                     defaults = parse_bool(
                                         value,
@@ -443,6 +491,8 @@ impl ConfigLayers {
                         layers.aliases.insert(
                             name.clone(),
                             Alias {
+                                args,
+                                harness_args,
                                 harness,
                                 model,
                                 effort,
@@ -456,6 +506,25 @@ impl ConfigLayers {
                                 disabled_skills: disabled.skills,
                                 disabled_mcp: disabled.mcp,
                                 disabled_profiles: disabled.profiles,
+                            },
+                        );
+                    }
+                }
+                "marketplaces" => {
+                    let definitions = value
+                        .as_table()
+                        .ok_or_else(|| invalid(path, "marketplaces must be a table"))?;
+                    for (name, value) in definitions {
+                        if !crate::marketplace::valid_name(name) {
+                            return Err(invalid(path, format!("invalid Marketplace name {name}")));
+                        }
+                        layers.marketplaces.insert(
+                            name.clone(),
+                            Sourced {
+                                value: crate::marketplace::Marketplace::parse(
+                                    value, path, is_user,
+                                )?,
+                                path: path.to_path_buf(),
                             },
                         );
                     }
@@ -777,6 +846,20 @@ impl ConfigLayers {
         Ok(())
     }
 
+    /// Find a Marketplace declaration by the native name used in a Plugin Binding.
+    pub fn marketplace_for_plugin(
+        &self,
+        harness: Harness,
+        id: &str,
+    ) -> Option<(&str, &crate::marketplace::Definition)> {
+        let (_, native) = id.split_once('@')?;
+        self.marketplaces.iter().find_map(|(logical, marketplace)| {
+            let definition = marketplace.value.definition(harness)?;
+            (definition.name.as_deref().unwrap_or(logical) == native)
+                .then_some((logical.as_str(), definition))
+        })
+    }
+
     pub fn settings(&self, harness: Harness) -> &HarnessSettings {
         match harness {
             Harness::Claude => &self.claude,
@@ -1004,4 +1087,15 @@ pub(crate) fn report(
     } else {
         Err(diagnostic)
     }
+}
+
+fn parse_args(value: &toml::Value, path: &Path, field: &str) -> Result<Vec<String>, Diagnostic> {
+    let args = parse_names(value, path, field)?;
+    if args.iter().any(|arg| arg.is_empty() || arg == "--") {
+        return Err(invalid(
+            path,
+            format!("{field} entries must be non-empty strings other than --"),
+        ));
+    }
+    Ok(args)
 }

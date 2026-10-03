@@ -162,16 +162,255 @@ fn read_claude_skills_dir_plugins(
 pub fn copilot_native_paths<'a>(
     home: &Path,
     bindings: impl Iterator<Item = &'a str>,
-) -> std::collections::BTreeMap<String, PathBuf> {
+) -> Result<std::collections::BTreeMap<String, PathBuf>, Diagnostic> {
+    let bindings: std::collections::BTreeSet<_> = bindings.collect();
     let mut paths = std::collections::BTreeMap::new();
-    for id in bindings.filter(|id| ayran_core::resolve::valid_copilot_native_id(id)) {
+    for id in bindings
+        .iter()
+        .copied()
+        .filter(|id| ayran_core::resolve::valid_copilot_native_id(id))
+    {
         let (name, market) = id.split_once('@').unwrap();
         let path = home.join("installed-plugins").join(market).join(name);
         if path.is_dir() {
             paths.insert(id.to_owned(), path);
         }
     }
-    paths
+    paths.extend(copilot_registry_paths(home, Some(&bindings))?);
+    Ok(paths)
+}
+
+fn copilot_enumeration_failure(path: &Path, message: impl std::fmt::Display) -> Diagnostic {
+    Diagnostic::error(
+        "enumeration-failed",
+        format!(
+            "cannot enumerate Copilot Plugins from {}: {message}",
+            path.display()
+        ),
+        None,
+    )
+}
+
+pub(crate) fn copilot_json(path: &Path) -> Result<Option<serde_json::Value>, Diagnostic> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(copilot_enumeration_failure(path, error)),
+    };
+    let value: serde_json::Value = serde_json_lenient::from_str(&contents)
+        .map_err(|error| copilot_enumeration_failure(path, error))?;
+    if !value.is_object() {
+        return Err(copilot_enumeration_failure(path, "expected an object"));
+    }
+    Ok(Some(value))
+}
+
+/// Include live roots which never appear in installed-plugins. Reading only
+/// requested IDs keeps isolated Sessions independent of unrelated shared roots.
+fn copilot_registry_paths(
+    home: &Path,
+    bindings: Option<&std::collections::BTreeSet<&str>>,
+) -> Result<std::collections::BTreeMap<String, PathBuf>, Diagnostic> {
+    let mut paths = std::collections::BTreeMap::new();
+    if bindings.is_some_and(|bindings| bindings.is_empty()) {
+        return Ok(paths);
+    }
+    let wanted = |id: &str| bindings.is_none_or(|bindings| bindings.contains(id));
+    let config = home.join("config.json");
+    if let Some(value) = copilot_json(&config)?
+        && let Some(plugins) = value.get("installedPlugins")
+    {
+        let plugins = plugins.as_array().ok_or_else(|| {
+            copilot_enumeration_failure(&config, "installedPlugins must be an array")
+        })?;
+        for plugin in plugins {
+            if let Some(bindings) = bindings {
+                let id = plugin
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .zip(
+                        plugin
+                            .get("marketplace")
+                            .and_then(serde_json::Value::as_str),
+                    )
+                    .map(|(name, market)| format!("{name}@{market}"));
+                if id.as_ref().is_none_or(|id| !bindings.contains(id.as_str())) {
+                    continue;
+                }
+            }
+            let name = plugin
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    copilot_enumeration_failure(&config, "installed Plugin needs a name")
+                })?;
+            let market = match plugin.get("marketplace") {
+                None | Some(serde_json::Value::Null) => "",
+                Some(value) => value.as_str().ok_or_else(|| {
+                    copilot_enumeration_failure(&config, "Plugin marketplace must be a string")
+                })?,
+            };
+            // Direct installs have no marketplace and cannot be native Bindings.
+            if market.is_empty() {
+                continue;
+            }
+            let id = format!("{name}@{market}");
+            if !wanted(&id) {
+                continue;
+            }
+            if !ayran_core::resolve::valid_copilot_native_id(&id) {
+                return Err(copilot_enumeration_failure(
+                    &config,
+                    format!("invalid Plugin ID {id}"),
+                ));
+            }
+            match plugin.get("cache_path") {
+                // Older copied installs may omit their default installed root.
+                None | Some(serde_json::Value::Null) => {}
+                Some(value) => {
+                    let path = value
+                        .as_str()
+                        .filter(|path| !path.is_empty())
+                        .ok_or_else(|| {
+                            copilot_enumeration_failure(
+                                &config,
+                                "Plugin cache_path must be a nonempty string",
+                            )
+                        })?;
+                    paths.insert(id, PathBuf::from(path));
+                }
+            }
+        }
+    }
+
+    let settings = home.join("settings.json");
+    if let Some(value) = copilot_json(&settings)?
+        && let Some(enabled) = value.get("enabledPlugins")
+    {
+        let enabled = enabled.as_object().ok_or_else(|| {
+            copilot_enumeration_failure(&settings, "enabledPlugins must be an object")
+        })?;
+        if value
+            .get("extraKnownMarketplaces")
+            .is_some_and(|markets| !markets.is_object())
+        {
+            return Err(copilot_enumeration_failure(
+                &settings,
+                "extraKnownMarketplaces must be an object",
+            ));
+        }
+        for (id, enabled) in enabled.iter().filter(|(id, _)| wanted(id)) {
+            if !enabled.is_boolean() {
+                return Err(copilot_enumeration_failure(
+                    &settings,
+                    "enabledPlugins entries must be booleans",
+                ));
+            }
+            if !ayran_core::resolve::valid_copilot_native_id(id) {
+                continue;
+            }
+            let (name, market) = id.split_once('@').unwrap();
+            let Some(source) = value
+                .get("extraKnownMarketplaces")
+                .and_then(|markets| markets.get(market))
+                .and_then(|market| market.get("source"))
+            else {
+                continue;
+            };
+            if source.get("source").and_then(serde_json::Value::as_str) != Some("directory") {
+                continue;
+            }
+            let root = source
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    copilot_enumeration_failure(&settings, "directory marketplace needs a path")
+                })?;
+            let root = Path::new(root);
+            let mut catalog = None;
+            for relative in [
+                "marketplace.json",
+                ".plugin/marketplace.json",
+                ".github/plugin/marketplace.json",
+                ".claude-plugin/marketplace.json",
+            ] {
+                let path = root.join(relative);
+                if let Some(value) = copilot_json(&path)? {
+                    catalog = Some((path, value));
+                    break;
+                }
+            }
+            let Some((path, catalog)) = catalog else {
+                return Err(copilot_enumeration_failure(
+                    root,
+                    "marketplace manifest is missing",
+                ));
+            };
+            let plugins = catalog
+                .get("plugins")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| copilot_enumeration_failure(&path, "plugins must be an array"))?;
+            if let Some(plugin) = plugins
+                .iter()
+                .find(|plugin| plugin.get("name").and_then(serde_json::Value::as_str) == Some(name))
+            {
+                let source = plugin.get("source").ok_or_else(|| {
+                    copilot_enumeration_failure(&path, "Plugin source is missing")
+                })?;
+                if source.is_object() {
+                    if matches!(
+                        source.get("source").and_then(serde_json::Value::as_str),
+                        Some("github" | "url")
+                    ) {
+                        continue;
+                    }
+                    return Err(copilot_enumeration_failure(
+                        &path,
+                        "invalid remote Plugin source",
+                    ));
+                }
+                let source = source
+                    .as_str()
+                    .filter(|source| !source.is_empty())
+                    .ok_or_else(|| {
+                        copilot_enumeration_failure(
+                            &path,
+                            "Plugin source must be a path string or remote source object",
+                        )
+                    })?;
+                let plugin_root = catalog
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("pluginRoot"));
+                let plugin_root = match plugin_root {
+                    None => "",
+                    Some(value) => value.as_str().ok_or_else(|| {
+                        copilot_enumeration_failure(&path, "pluginRoot must be a string")
+                    })?,
+                };
+                paths.insert(id.clone(), root.join(plugin_root).join(source));
+            }
+        }
+    }
+    let mut found = std::collections::BTreeMap::new();
+    for (id, path) in paths {
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => {
+                fs::read_dir(&path).map_err(|error| copilot_enumeration_failure(&path, error))?;
+                found.insert(id, path);
+            }
+            Ok(_) => {
+                return Err(copilot_enumeration_failure(
+                    &path,
+                    "Plugin root must be a directory",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(copilot_enumeration_failure(&path, error)),
+        }
+    }
+    Ok(found)
 }
 
 fn read_copilot(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlugins, Diagnostic> {
@@ -187,14 +426,18 @@ fn read_copilot(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlug
             None,
         )
     };
+    let mut installed = InstalledPlugins {
+        paths: copilot_registry_paths(&home, None)?,
+        ..InstalledPlugins::default()
+    };
+    installed.user.extend(installed.paths.keys().cloned());
     let marketplaces = match fs::read_dir(&root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(InstalledPlugins::default());
+            return Ok(installed);
         }
         Err(error) => return Err(failure(error.to_string())),
     };
-    let mut installed = InstalledPlugins::default();
     for marketplace in marketplaces {
         let marketplace = marketplace.map_err(|error| failure(error.to_string()))?;
         if !marketplace
@@ -232,7 +475,7 @@ fn read_copilot(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlug
                     .map_err(|_| failure("Plugin name is not UTF-8".into()))?;
                 let id = format!("{name}@{market}");
                 installed.user.insert(id.clone());
-                installed.paths.insert(id, entry.path());
+                installed.paths.entry(id).or_insert_with(|| entry.path());
             }
         }
     }
@@ -240,8 +483,21 @@ fn read_copilot(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlug
 }
 
 fn read_codex(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlugins, Diagnostic> {
-    let home = home.directory.clone();
-    let path = home.join("config.toml");
+    let mut installed = InstalledPlugins::default();
+    read_codex_layer(
+        &home.directory,
+        &home.directory.join("config.toml"),
+        &mut installed,
+    )?;
+    Ok(installed)
+}
+
+pub(crate) fn read_codex_layer(
+    home: &Path,
+    path: &Path,
+    installed: &mut InstalledPlugins,
+) -> Result<(), Diagnostic> {
+    let value = crate::codex_config::read_table(path)?;
     let failure = |message: String| {
         Diagnostic::error(
             "enumeration-failed",
@@ -252,17 +508,6 @@ fn read_codex(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlugin
             None,
         )
     };
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(InstalledPlugins::default());
-        }
-        Err(error) => return Err(failure(error.to_string())),
-    };
-    let value: toml::Table = contents
-        .parse()
-        .map_err(|error: toml::de::Error| failure(error.to_string()))?;
-    let mut installed = InstalledPlugins::default();
     if let Some(plugins) = value.get("plugins") {
         let plugins = plugins
             .as_table()
@@ -293,7 +538,7 @@ fn read_codex(home: &crate::harness_home::HarnessHome) -> Result<InstalledPlugin
             }
         }
     }
-    Ok(installed)
+    Ok(())
 }
 
 /// Match Codex's installed-version selection without opening Plugin payloads.

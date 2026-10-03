@@ -44,6 +44,38 @@ impl Harness {
         }
     }
 
+    /// Inspect only the model and Effort options ayran itself manages.
+    pub fn args_overlap_model_or_effort(self, args: &[String]) -> bool {
+        let flag = |arg: &str, name: &str| {
+            arg == name
+                || arg
+                    .strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with('='))
+        };
+        args.iter().enumerate().any(|(index, arg)| match self {
+            Self::Claude => flag(arg, "--model") || flag(arg, "--effort"),
+            Self::Copilot => flag(arg, "--model") || flag(arg, "--reasoning-effort"),
+            Self::Codex => {
+                flag(arg, "-m")
+                    || flag(arg, "--model")
+                    || arg.starts_with("-m") && arg.len() > 2
+                    || (arg == "-c" || arg == "--config")
+                        && args.get(index + 1).is_some_and(|value| {
+                            value
+                                .split_once('=')
+                                .is_some_and(|(key, _)| key.trim() == "model_reasoning_effort")
+                        })
+                    || ["-c", "--config="].iter().any(|prefix| {
+                        arg.strip_prefix(prefix).is_some_and(|value| {
+                            value
+                                .split_once('=')
+                                .is_some_and(|(key, _)| key.trim() == "model_reasoning_effort")
+                        })
+                    })
+            }
+        })
+    }
+
     pub fn translate_model_and_effort(
         self,
         model: Option<&str>,

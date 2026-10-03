@@ -27,6 +27,7 @@ pub struct LaunchPlan {
 }
 
 pub struct ResolutionTrace {
+    pub harness_args: Vec<String>,
     pub harness: String,
     pub model: String,
     pub effort: String,

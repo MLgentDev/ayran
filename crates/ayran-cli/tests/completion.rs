@@ -290,7 +290,7 @@ foreach ($line in 'ayran --profile to', 'ayran --no-profile to') {
 }
 foreach ($name in 'cr', 'my-task') {
     $matches = @(Complete "$name ")
-    if (($matches.CompletionText -join ' ') -cne '--dry-run --effort --help --json --mcp --model --no-defaults --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q') {
+    if (($matches.CompletionText -join ' ') -cne '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q') {
         throw "Alias flags: $name $($matches.CompletionText -join ' ')"
     }
     foreach ($match in $matches) { if (!$match.ToolTip) { throw "missing Alias description: $name" } }
@@ -599,7 +599,7 @@ for name in cr my-task; do
     COMP_WORDS=("$name" '' ignored)
     COMP_CWORD=1
     "$completion_function"
-    [[ ${COMPREPLY[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q' ]]
+    [[ ${COMPREPLY[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q' ]]
     expected=("${COMPREPLY[@]}")
     direct=()
     while IFS= read -r candidate; do direct+=("$candidate"); done < <(ayran __complete -- ayran --alias "$name" '')
@@ -821,7 +821,7 @@ for name in cr my-task; do
         actual+=("${candidate%%:*}")
         [[ ${candidate#*:} != '' ]]
     done
-    [[ ${actual[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q' ]]
+    [[ ${actual[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q' ]]
     words=("$name" --effort hi)
     CURRENT=3
     "${_comps[$name]}"
@@ -1928,4 +1928,15 @@ fn mcp_completion_offers_claude_connector_bindings() {
         "linear\n",
     );
     assert_completion(home.complete(&["ayran", "--copilot", "--mcp", ""]), "");
+}
+
+#[test]
+fn completion_offers_harness_args_suppression_on_launch_and_resume() {
+    let home = TestHome::new();
+    for words in [
+        vec!["ayran", "--no-harness"],
+        vec!["ayran", "resume", "--no-harness"],
+    ] {
+        assert_completion(home.complete(&words), "--no-harness-args\n");
+    }
 }

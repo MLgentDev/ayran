@@ -173,6 +173,22 @@ fn reachable(layers: &ConfigLayers, state: &DoctorState, harness: Harness) -> Re
             .collect(),
     }
 }
+/// Logical Plugins reachable through Defaults, Profiles or Aliases on this Harness.
+pub fn reachable_plugins(
+    layers: &ConfigLayers,
+    installed: &[Harness],
+    harness: Harness,
+) -> BTreeSet<String> {
+    let state = DoctorState {
+        installed: installed.to_vec(),
+        ..Default::default()
+    };
+    reachable(layers, &state, harness)
+        .members
+        .into_iter()
+        .filter_map(|(kind, name)| (kind == CapabilityKind::Plugin).then_some(name))
+        .collect()
+}
 fn gap(
     code: &'static str,
     message: String,
@@ -229,6 +245,7 @@ pub fn audit(layers: &ConfigLayers, state: &DoctorState) -> Vec<Diagnostic> {
             });
         }
     }
+    check_harness_args(layers, &mut diagnostics);
     check_profiles(layers, state, &mut diagnostics);
     for harness in HARNESSES {
         let reachable = reachable(layers, state, harness);
@@ -763,20 +780,60 @@ fn check_native_bindings(
         }
     }
     for (kind, name, layer, id) in missing {
-        diagnostics.push(
-            gap(
-                "native-not-found",
-                format!(
-                    "{kind} {name} binds {id}, which was not found on {}",
-                    harness.binary()
-                ),
-                kind,
-                name,
-                layer,
-                harness,
-                reachable,
-            )
-            .with_item(id),
-        );
+        let installable =
+            kind == CapabilityKind::Plugin && layers.marketplace_for_plugin(harness, id).is_some();
+        let mut diagnostic = gap(
+            if installable {
+                "not-installed"
+            } else {
+                "native-not-found"
+            },
+            format!(
+                "{kind} {name} binds {id}, which was not found on {}",
+                harness.binary()
+            ),
+            kind,
+            name,
+            layer,
+            harness,
+            reachable,
+        )
+        .with_item(id);
+        if installable {
+            diagnostic.hint = Some(format!("ayran install {name}"));
+        }
+        diagnostics.push(diagnostic);
+    }
+}
+
+fn check_harness_args(layers: &ConfigLayers, diagnostics: &mut Vec<Diagnostic>) {
+    for harness in HARNESSES {
+        let mut sources = Vec::new();
+        if let Some(args) = &layers.settings(harness).args {
+            sources.push((
+                &args.value,
+                args.path.display().to_string(),
+                Some(args.path.display().to_string()),
+            ));
+        }
+        for (name, alias) in &layers.aliases {
+            if alias.harness == harness {
+                sources.push((&alias.args, format!("Alias {name}"), None));
+            }
+        }
+        for (args, source, layer) in sources {
+            if harness.args_overlap_model_or_effort(args) {
+                diagnostics.push(Diagnostic {
+                    code: "harness-args-overlap",
+                    severity: Severity::Warning,
+                    harness: Some(harness),
+                    layer,
+                    message: format!(
+                        "{source}: Harness args contain a model or Effort flag managed by ayran"
+                    ),
+                    ..Default::default()
+                });
+            }
+        }
     }
 }

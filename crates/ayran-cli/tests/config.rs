@@ -569,3 +569,49 @@ fn templates_offer_scope_appropriate_examples_and_existing_files_are_preserved()
         "# existing\n"
     );
 }
+
+#[test]
+fn harness_args_are_valid_only_in_private_layers_in_list_and_edit() {
+    let workspace = Workspace::new();
+    for name in ["user.toml", "ayran.toml", "ayran.local.toml"] {
+        fs::write(
+            workspace.path().join(name),
+            "[harnesses.copilot]\nargs = ['--allow-all']\n",
+        )
+        .unwrap();
+    }
+    let output = workspace.run(&["config", "list", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for row in rows.as_array().unwrap() {
+        assert_eq!(row["valid"], row["scope"] != "project", "{row}");
+    }
+    for (scope, code) in [("-u", 0), ("-l", 0), ("-p", 3)] {
+        let output = workspace
+            .command()
+            .env("VISUAL", "true")
+            .args(["config", "edit", scope])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        if code == 3 {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("private-layer-only"));
+        }
+    }
+}
+
+#[test]
+fn private_templates_offer_harness_args() {
+    let workspace = Workspace::new();
+    for (scope, private) in [("-u", true), ("-l", true), ("-p", false)] {
+        let output = workspace
+            .command()
+            .env("VISUAL", "cat")
+            .args(["config", "edit", scope])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let template = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(template.contains("# args = ["), private, "{template}");
+    }
+}

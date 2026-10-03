@@ -83,6 +83,54 @@ pub fn run(matches: &ArgMatches) -> i32 {
                         }),
                         &mut diagnostics,
                     );
+                    if harness == Harness::Codex
+                        && !missing
+                        && let (Some(plugins), Some(skills), Some(mcp)) = (
+                            &mut inventory.plugins,
+                            &mut inventory.skills,
+                            &mut inventory.mcp,
+                        )
+                    {
+                        let mut profiles = Vec::new();
+                        if let Some(args) = &layers.settings(harness).args {
+                            profiles.extend(crate::codex_config::profiles(
+                                &args
+                                    .value
+                                    .iter()
+                                    .map(std::ffi::OsString::from)
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        for alias in layers
+                            .aliases
+                            .values()
+                            .filter(|alias| alias.harness == harness)
+                        {
+                            profiles.extend(crate::codex_config::profiles(
+                                &alias
+                                    .args
+                                    .iter()
+                                    .map(std::ffi::OsString::from)
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        profiles.sort();
+                        profiles.dedup();
+                        if let Err(mut diagnostic) = crate::codex_config::apply(
+                            &home,
+                            real_home.as_deref(),
+                            &profiles,
+                            plugins,
+                            skills,
+                            mcp,
+                        ) {
+                            diagnostic.harness = Some(harness);
+                            diagnostics.push(diagnostic);
+                            inventory.plugins = None;
+                            inventory.skills = None;
+                            inventory.mcp = None;
+                        }
+                    }
                     // Copilot launch loads declared native Plugins from the shared home.
                     if harness == Harness::Copilot
                         && isolated
@@ -102,10 +150,17 @@ pub fn run(matches: &ArgMatches) -> i32 {
                                         _ => None,
                                     }
                                 });
-                                plugins.paths = crate::plugin_enumeration::copilot_native_paths(
+                                match crate::plugin_enumeration::copilot_native_paths(
                                     &shared.directory,
                                     bindings,
-                                );
+                                ) {
+                                    Ok(paths) => plugins.paths = paths,
+                                    Err(mut d) => {
+                                        d.harness = Some(harness);
+                                        diagnostics.push(d);
+                                        inventory.plugins = None;
+                                    }
+                                }
                             }
                             Err(mut d) => {
                                 d.harness = Some(harness);
@@ -200,6 +255,35 @@ pub fn run(matches: &ArgMatches) -> i32 {
             &audit_layers,
             &state,
         ));
+    }
+    for harness in state
+        .installed
+        .iter()
+        .copied()
+        .filter(|h| filter.is_none_or(|f| f == *h))
+    {
+        // A failed discovery already carries an error; do not produce advice from incomplete state.
+        if let Ok(plugins) = crate::native_plugins::read(&audit_layers, &[harness]) {
+            for plugin in plugins
+                .into_iter()
+                .filter(|p| p.state == crate::native_plugins::NativeState::On && !p.reachable)
+            {
+                diagnostics.push(ayran_core::diagnostic::Diagnostic {
+                    code: "native-plugin-unreachable", severity: Severity::Note,
+                    message: format!("Plugin {} is hidden on every launch; `ayran native plugin disable {} --{}` would make that permanent", plugin.id, plugin.id, harness.binary()),
+                    harness: Some(harness), item: Some(Box::new(plugin.id)), layer: Some(plugin.layer),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    for harness in state
+        .installed
+        .iter()
+        .copied()
+        .filter(|h| filter.is_none_or(|f| f == *h))
+    {
+        diagnostics.extend(crate::install_plan::audit(&audit_layers, harness));
     }
     ayran_core::doctor::order(&mut diagnostics);
     diagnostics.retain(|d| filter.is_none() || d.harness.is_none() || d.harness == filter);

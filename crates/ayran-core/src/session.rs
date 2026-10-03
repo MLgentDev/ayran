@@ -77,6 +77,7 @@ pub fn merge(stored: &Request, flags: Request) -> Request {
         flags.no_profiles,
     );
     merged.no_defaults |= flags.no_defaults;
+    merged.no_harness_args |= flags.no_harness_args;
     let mut merged = normalize(merged);
     merged.passthrough = flags.passthrough;
     merged

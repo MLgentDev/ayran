@@ -17,7 +17,11 @@ pub fn read_codex(
     let home = harness_home.directory.clone();
     let mut state = McpState::default();
     let user_config = home.join("config.toml");
-    read_codex_config(&user_config, &mut state.user, Some(&mut state.enabled_apps))?;
+    read_codex_config(
+        &user_config,
+        &mut state.user,
+        CodexScope::User(&mut state.enabled_apps),
+    )?;
     let cwd = env::current_dir().map_err(|error| codex_failure(Path::new("."), error))?;
     for directory in crate::codex_config::project_directories(&home, &cwd)? {
         let path = directory.join(".codex/config.toml");
@@ -26,7 +30,7 @@ pub fn read_codex(
                 !crate::skill_enumeration::same_root(&path, &home.join(".codex/config.toml"))
             })
         {
-            read_codex_config(&path, &mut state.project, None)?;
+            read_codex_config(&path, &mut state.project, CodexScope::Project)?;
         }
     }
     Ok(state)
@@ -216,11 +220,17 @@ fn codex_failure(path: &Path, message: impl std::fmt::Display) -> Diagnostic {
     )
 }
 
-fn read_codex_config(
+pub(crate) enum CodexScope<'a> {
+    User(&'a mut BTreeSet<String>),
+    Project,
+}
+
+pub(crate) fn read_codex_config(
     path: &Path,
     names: &mut BTreeSet<String>,
-    enabled_apps: Option<&mut BTreeSet<String>>,
+    scope: CodexScope<'_>,
 ) -> Result<(), Diagnostic> {
+    let user_layer = matches!(&scope, CodexScope::User(_));
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -229,7 +239,7 @@ fn read_codex_config(
     let config: toml::Table = contents
         .parse()
         .map_err(|error| codex_failure(path, error))?;
-    if let Some(enabled_apps) = enabled_apps
+    if let CodexScope::User(enabled_apps) = scope
         && let Some(apps) = config.get("apps")
     {
         let apps = apps
@@ -264,7 +274,10 @@ fn read_codex_config(
                     format!("MCP server {name} enabled must be a boolean"),
                 ));
             }
-            names.insert(name.clone());
+            // A project enabled-only table changes user state; it defines no project server.
+            if user_layer || server.keys().any(|key| key != "enabled") {
+                names.insert(name.clone());
+            }
         }
     }
     Ok(())

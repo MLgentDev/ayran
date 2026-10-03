@@ -56,6 +56,32 @@ pub fn read(
     Ok(())
 }
 
+/// A configured path is user-level even when it lies outside the usual roots.
+pub(crate) fn read_configured_path(path: &Path, state: &mut SkillState) -> Result<(), Diagnostic> {
+    let file = if path.is_dir() {
+        path.join("SKILL.md")
+    } else {
+        path.to_path_buf()
+    };
+    let contents = match fs::read_to_string(&file) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failure(&file, error)),
+    };
+    let file = file.canonicalize().map_err(|error| failure(&file, error))?;
+    if let Some(name) = skill_name(&file, &contents) {
+        state
+            .codex
+            .entry(file)
+            .and_modify(|skill| skill.personal = true)
+            .or_insert(CodexSkill {
+                name,
+                personal: true,
+            });
+    }
+    Ok(())
+}
+
 fn same_root(left: &Path, right: &Path) -> bool {
     left == right
         || matches!((left.canonicalize(), right.canonicalize()), (Ok(left), Ok(right)) if left == right)

@@ -8,6 +8,9 @@ pub fn command() -> Command {
         .subcommand(config_command::command())
         .subcommand(crate::doctor_command::command())
         .subcommand(crate::list_command::command())
+        .subcommand(crate::native_command::command())
+        .subcommand(crate::trust::command())
+        .subcommand(crate::install_command::command())
         .subcommand(crate::update_command::command())
         .subcommand(
             Command::new("__complete").hide(true).arg(
@@ -107,6 +110,12 @@ pub fn command() -> Command {
                 .long("no-plugin")
                 .action(ArgAction::Append)
                 .value_delimiter(','),
+        )
+        .arg(
+            Arg::new("no-harness-args")
+                .help("Drop configured Harness and Alias args")
+                .long("no-harness-args")
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("no-defaults")

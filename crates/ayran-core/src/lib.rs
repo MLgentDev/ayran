@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod enumerate;
 pub mod harness;
 pub mod launch;
+pub mod marketplace;
 pub mod mcp;
 pub mod plugin_audit;
 pub mod resolve;

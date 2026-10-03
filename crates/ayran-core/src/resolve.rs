@@ -24,6 +24,7 @@ pub struct Request {
     pub no_mcp: Vec<String>,
     pub no_profiles: Vec<String>,
     pub no_defaults: bool,
+    pub no_harness_args: bool,
     #[serde(skip)]
     pub passthrough: Vec<OsString>,
 }
@@ -55,6 +56,27 @@ impl fmt::Display for CapabilityOrigin<'_> {
 }
 
 impl Request {
+    /// Arguments after generated flags, in the exact order passed to the Harness.
+    pub fn trailing_args(&self, layers: &ConfigLayers, harness: Harness) -> Vec<OsString> {
+        let mut args = Vec::new();
+        let alias = self
+            .alias
+            .as_ref()
+            .and_then(|name| layers.aliases.get(name));
+        if !self.no_harness_args {
+            if alias.is_none_or(|alias| alias.harness_args)
+                && let Some(configured) = &layers.settings(harness).args
+            {
+                args.extend(configured.value.iter().map(OsString::from));
+            }
+            if let Some(alias) = alias {
+                args.extend(alias.args.iter().map(OsString::from));
+            }
+        }
+        args.extend(self.passthrough.iter().cloned());
+        args
+    }
+
     /// Choose the Harness before the caller enumerates its installed state.
     pub fn resolve_harness(
         &self,
@@ -318,7 +340,10 @@ pub fn resolve(
                                 "Plugin {name} binds {id}, which is not installed on {}",
                                 harness.binary()
                             ),
-                            None,
+                            layers
+                                .marketplace_for_plugin(harness, id)
+                                .map(|_| format!("ayran install {name}"))
+                                .as_deref(),
                         )
                         .for_capability(
                             harness,
@@ -478,6 +503,25 @@ pub fn resolve(
             settings["disableClaudeAiConnectors"] = serde_json::json!(true);
         }
         if !enabled.is_empty() {
+            enabled.retain(|id, value| {
+                if installed
+                    .claude_enabled
+                    .get(*id)
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(*value)
+                {
+                    plugins.push(format!(
+                        "Plugin {id}: {} (natively {}, no override needed)",
+                        if *value { "selected" } else { "hidden" },
+                        if *value { "on" } else { "off" }
+                    ));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if !enabled.is_empty() {
             settings["enabledPlugins"] = serde_json::json!(enabled);
             plugins.push(format!(
                 "Plugin settings: {}",
@@ -504,6 +548,14 @@ pub fn resolve(
             Harness::Claude => unreachable!("Claude overrides are merged above"),
             Harness::Codex => {
                 for (id, enabled) in &enabled {
+                    if installed.codex_enabled.get(*id) == Some(enabled) {
+                        plugins.push(format!(
+                            "Plugin {id}: {} (natively {}, no override needed)",
+                            if *enabled { "selected" } else { "hidden" },
+                            if *enabled { "on" } else { "off" }
+                        ));
+                        continue;
+                    }
                     let key = toml::Value::String((*id).clone());
                     // Codex splits override keys on dots and preserves quotes literally.
                     let setting = if id.contains('.') {
@@ -567,6 +619,23 @@ pub fn resolve(
     options
         .args
         .extend(resolved_mcp.args.iter().map(Into::into));
+    let mut harness_args = Vec::new();
+    if !request.no_harness_args {
+        if alias.is_none_or(|(_, definition)| definition.harness_args)
+            && let Some(args) = &settings.args
+        {
+            for arg in &args.value {
+                options.args.push(arg.into());
+                harness_args.push(format!("Harness arg: {arg} ({})", args.path.display()));
+            }
+        }
+        if let Some((name, definition)) = alias {
+            for arg in &definition.args {
+                options.args.push(arg.into());
+                harness_args.push(format!("Harness arg: {arg} (Alias {name})"));
+            }
+        }
+    }
     options.args.extend(request.passthrough);
     for diagnostic in &mut diagnostics {
         diagnostic.harness.get_or_insert(harness);
@@ -578,6 +647,7 @@ pub fn resolve(
         env_set,
         env_remove: options.env_remove,
         trace: ResolutionTrace {
+            harness_args,
             plugins,
             skills,
             profiles: profile_trace,

@@ -17,8 +17,15 @@ pub fn read(harness_home: &crate::harness_home::HarnessHome) -> Result<McpState,
     if let Some(config) = read_json_object(&path, Harness::Copilot)? {
         read_json_servers(&config, &path, &mut state.user, Harness::Copilot)?;
     }
+    read_disabled(&home.join("settings.json"), &mut state.copilot_user_off)?;
     let cwd = env::current_dir().map_err(|error| failure(Path::new("."), error))?;
     for directory in cwd.ancestors() {
+        for relative in [
+            ".github/copilot/settings.json",
+            ".github/copilot/settings.local.json",
+        ] {
+            read_disabled(&directory.join(relative), &mut state.copilot_project_off)?;
+        }
         for relative in [".mcp.json", ".github/mcp.json"] {
             let path = directory.join(relative);
             if let Some(config) = read_json_object(&path, Harness::Copilot)? {
@@ -30,6 +37,33 @@ pub fn read(harness_home: &crate::harness_home::HarnessHome) -> Result<McpState,
         }
     }
     Ok(state)
+}
+
+fn read_disabled(path: &Path, names: &mut BTreeSet<String>) -> Result<(), Diagnostic> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failure(path, error)),
+    };
+    let config: Value =
+        serde_json_lenient::from_str(&contents).map_err(|error| failure(path, error))?;
+    if !config.is_object() {
+        return Err(failure(path, "settings must be an object"));
+    }
+    if let Some(disabled) = config.get("disabledMcpServers") {
+        let entries = disabled
+            .as_array()
+            .ok_or_else(|| failure(path, "disabledMcpServers must be an array"))?;
+        for entry in entries {
+            names.insert(
+                entry
+                    .as_str()
+                    .ok_or_else(|| failure(path, "disabledMcpServers must contain strings"))?
+                    .into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn read_plugins<'a>(

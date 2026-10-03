@@ -114,6 +114,13 @@ fn complete_described(
             if alias_selected {
                 return Vec::new();
             }
+            if command.get_name() == "plugin" && matches!(*word, "enable" | "disable") {
+                context.native_state = Some(if *word == "disable" {
+                    crate::native_plugins::NativeState::On
+                } else {
+                    crate::native_plugins::NativeState::Off
+                });
+            }
             command = subcommand;
             positional_index = 1;
             used.clear();
@@ -238,6 +245,8 @@ struct CompletionContext<'a> {
     selected_profiles: Vec<String>,
     disabled_profiles: Vec<String>,
     no_defaults: bool,
+    native_state: Option<crate::native_plugins::NativeState>,
+    native_id: bool,
 }
 
 impl<'a> CompletionContext<'a> {
@@ -256,6 +265,8 @@ impl<'a> CompletionContext<'a> {
             selected_profiles: Vec::new(),
             disabled_profiles: Vec::new(),
             no_defaults: false,
+            native_state: None,
+            native_id: false,
         }
     }
 
@@ -298,6 +309,10 @@ impl<'a> CompletionContext<'a> {
             }
             "no-defaults" => {
                 self.no_defaults = true;
+                return;
+            }
+            "native-id" => {
+                self.native_id = true;
                 return;
             }
             "plugin" => {
@@ -748,7 +763,7 @@ fn available(command: &clap::Command, arg: &clap::Arg, used: &[&clap::Arg]) -> b
         // Launch scalars use Append/Count to diagnose duplicates in main.
         // Comma-delimited Append arguments represent repeatable Capability lists.
         let repeatable = matches!(arg.get_action(), clap::ArgAction::Append)
-            && arg.get_value_delimiter().is_some();
+            && (arg.get_value_delimiter().is_some() || arg.get_id() == "native-names");
         !(same && !repeatable
             || is_harness_arg(previous) && is_harness_arg(arg)
             || command
@@ -769,9 +784,11 @@ fn available(command: &clap::Command, arg: &clap::Arg, used: &[&clap::Arg]) -> b
 }
 
 fn positional(command: &clap::Command, index: usize) -> Option<&clap::Arg> {
-    command
-        .get_positionals()
-        .find(|arg| arg.get_index() == Some(index) && !arg.is_last_set())
+    command.get_positionals().find(|arg| {
+        !arg.is_last_set()
+            && (arg.get_index() == Some(index)
+                || arg.get_id() == "native-names" && index >= arg.get_index().unwrap_or(1))
+    })
 }
 
 fn accepts_value(arg: &clap::Arg, word: &str) -> bool {
@@ -800,6 +817,44 @@ fn value_candidates(
     prefix: &str,
     context: &CompletionContext<'_>,
 ) -> Vec<Candidate> {
+    if arg.get_id() == "native-names" {
+        let Some(state) = context.native_state else {
+            return Vec::new();
+        };
+        let Ok(layers) = ConfigLayers::load() else {
+            return Vec::new();
+        };
+        let harnesses = crate::native_plugins::installed()
+            .into_iter()
+            .filter(|h| context.explicit.is_none_or(|selected| selected == *h))
+            .collect::<Vec<_>>();
+        let Ok(plugins) = crate::native_plugins::read(&layers, &harnesses) else {
+            return Vec::new();
+        };
+        let mut names = std::collections::BTreeMap::new();
+        for plugin in plugins.into_iter().filter(|p| p.state == state) {
+            let description = format!(
+                "{} {} ({})",
+                plugin.harness.binary(),
+                plugin.id,
+                plugin.state.as_str()
+            );
+            // A native ID needs a Harness flag; an unflagged logical name targets every installed Harness.
+            if context.explicit.is_some() {
+                names.insert(plugin.id.clone(), description.clone());
+            }
+            if !context.native_id {
+                for logical in plugin.logical {
+                    names.insert(logical, description.clone());
+                }
+            }
+        }
+        return names
+            .into_iter()
+            .filter(|(n, _)| n.starts_with(prefix))
+            .map(|(n, d)| Candidate::new(n, d))
+            .collect();
+    }
     if arg.get_id() == "id" {
         return crate::session_store::records()
             .unwrap_or_default()

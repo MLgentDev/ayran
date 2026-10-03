@@ -129,7 +129,7 @@ fn json_profiles_are_direct_members_and_kind_filters_select_rows() {
     assert_eq!(
         json,
         serde_json::json!({
-            "version":1, "aliases":[], "sessions":[], "plugins":[], "skills":[], "mcp":[], "diagnostics":[],
+            "version":1, "aliases":[], "sessions":[], "marketplaces":[], "plugins":[], "skills":[], "mcp":[], "diagnostics":[],
             "summary":{"errors":0,"warnings":0,"notes":0},
             "profiles":[
                 {"name":"base", "default":false, "layer":user, "description":null,
@@ -232,7 +232,7 @@ fn json_has_a_versioned_envelope_and_lossless_effective_bindings() {
     assert_eq!(
         json,
         serde_json::json!({
-            "version": 1, "aliases": [], "sessions": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
+            "version": 1, "aliases": [], "sessions": [], "marketplaces": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
             "profiles": [], "skills": [], "mcp": [],
             "plugins": [
                 {"name":"build", "default":true, "layer":user, "description":null, "bindings": {
@@ -367,7 +367,7 @@ fn skill_json_has_a_versioned_envelope_and_lossless_effective_bindings() {
     assert_eq!(
         json,
         serde_json::json!({
-            "version": 1, "aliases": [], "sessions": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
+            "version": 1, "aliases": [], "sessions": [], "marketplaces": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
             "profiles": [], "plugins": [], "mcp": [],
             "skills": [
                 {"name":"build", "default":true, "layer":user, "description":null, "bindings": {
@@ -534,7 +534,7 @@ harness = 'claude'
     assert_eq!(
         json,
         serde_json::json!({
-            "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "sessions":[],
+            "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "sessions":[], "marketplaces":[],
             "aliases":expected, "diagnostics":[], "summary":{"errors":0,"warnings":0,"notes":0}
         })
     );
