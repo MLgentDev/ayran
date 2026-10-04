@@ -11,7 +11,38 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub struct Registration {
+    pub definition: Option<Definition>,
+    pub source: String,
+    pub reference: Option<String>,
+}
+
 pub fn read(harness: Harness, home: &Path) -> Result<BTreeMap<String, Definition>, Diagnostic> {
+    read_registrations(harness, home, false).map(|rows| {
+        rows.into_iter()
+            .map(|(name, row)| {
+                (
+                    name,
+                    row.definition
+                        .expect("strict read requires a supported source"),
+                )
+            })
+            .collect()
+    })
+}
+
+pub fn read_listing(
+    harness: Harness,
+    home: &Path,
+) -> Result<BTreeMap<String, Registration>, Diagnostic> {
+    read_registrations(harness, home, true)
+}
+
+fn read_registrations(
+    harness: Harness,
+    home: &Path,
+    listing: bool,
+) -> Result<BTreeMap<String, Registration>, Diagnostic> {
     let mut result = BTreeMap::new();
     if harness == Harness::Codex {
         let path = home.join("config.toml");
@@ -34,9 +65,12 @@ pub fn read(harness: Harness, home: &Path) -> Result<BTreeMap<String, Definition
                     .ok_or_else(|| failure(&path, "Marketplace source_type missing"))?;
                 result.insert(
                     name.clone(),
-                    Definition {
-                        source: source_value(kind, source, &path)?,
-                        reference: market
+                    registration(
+                        kind,
+                        source,
+                        &path,
+                        listing,
+                        market
                             .get("ref")
                             .map(|v| {
                                 v.as_str()
@@ -44,8 +78,7 @@ pub fn read(harness: Harness, home: &Path) -> Result<BTreeMap<String, Definition
                                     .ok_or_else(|| failure(&path, "ref must be a string"))
                             })
                             .transpose()?,
-                        name: None,
-                    },
+                    )?,
                 );
             }
         }
@@ -81,19 +114,32 @@ pub fn read(harness: Harness, home: &Path) -> Result<BTreeMap<String, Definition
                 .get("source")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure(&path, "Marketplace source kind missing"))?;
-            let value = source
-                .get(match kind {
+            let value = if listing && source_value(kind, "").is_none() {
+                ["url", "repo", "path", "package"]
+                    .into_iter()
+                    .find_map(|key| source.get(key))
+            } else {
+                source.get(match kind {
                     "github" => "repo",
                     "directory" => "path",
                     _ => "url",
                 })
-                .and_then(Value::as_str)
-                .ok_or_else(|| failure(&path, "Marketplace source value missing"))?;
+            };
+            let value = match value {
+                Some(value) => value
+                    .as_str()
+                    .ok_or_else(|| failure(&path, "Marketplace source value must be a string"))?,
+                None if listing && source_value(kind, "").is_none() => "",
+                None => return Err(failure(&path, "Marketplace source value missing")),
+            };
             result.insert(
                 name.clone(),
-                Definition {
-                    source: source_value(kind, value, &path)?,
-                    reference: source
+                registration(
+                    kind,
+                    value,
+                    &path,
+                    listing,
+                    source
                         .get("ref")
                         .map(|v| {
                             v.as_str()
@@ -101,22 +147,51 @@ pub fn read(harness: Harness, home: &Path) -> Result<BTreeMap<String, Definition
                                 .ok_or_else(|| failure(&path, "ref must be a string"))
                         })
                         .transpose()?,
-                    name: None,
-                },
+                )?,
             );
         }
     }
     Ok(result)
 }
-fn source_value(kind: &str, value: &str, path: &Path) -> Result<Source, Diagnostic> {
-    match kind {
-        "github" => Ok(Source::Github(value.to_owned())),
-        "git" => Ok(Source::Git(value.to_owned())),
-        "directory" | "local" => Ok(Source::Path(PathBuf::from(value))),
-        _ => Err(failure(
+fn registration(
+    kind: &str,
+    value: &str,
+    path: &Path,
+    listing: bool,
+    reference: Option<String>,
+) -> Result<Registration, Diagnostic> {
+    let source = source_value(kind, value);
+    if source.is_none() && !listing {
+        return Err(failure(
             path,
             format!("unsupported native Marketplace source type {kind}"),
-        )),
+        ));
+    }
+    Ok(Registration {
+        source: source.as_ref().map_or_else(
+            || {
+                if value.is_empty() {
+                    kind.to_owned()
+                } else {
+                    format!("{kind}:{value}")
+                }
+            },
+            Source::label,
+        ),
+        definition: source.map(|source| Definition {
+            source,
+            reference: reference.clone(),
+            name: None,
+        }),
+        reference,
+    })
+}
+fn source_value(kind: &str, value: &str) -> Option<Source> {
+    match kind {
+        "github" => Some(Source::Github(value.to_owned())),
+        "git" => Some(Source::Git(value.to_owned())),
+        "directory" | "local" => Some(Source::Path(PathBuf::from(value))),
+        _ => None,
     }
 }
 pub fn same_source(left: &Definition, right: &Definition) -> bool {
@@ -125,9 +200,29 @@ pub fn same_source(left: &Definition, right: &Definition) -> bool {
             a.canonicalize().unwrap_or_else(|_| a.clone())
                 == b.canonicalize().unwrap_or_else(|_| b.clone())
         }
-        (a, b) => a == b,
+        (a, b) => a == b || github_repo(a).is_some_and(|repo| github_repo(b) == Some(repo)),
     };
     equal && left.reference == right.reference
+}
+/// Codex records `github:owner/repo` as `https://github.com/owner/repo.git`.
+fn github_repo(source: &Source) -> Option<String> {
+    let repo = match source {
+        Source::Github(repo) => repo.as_str(),
+        Source::Git(url) => [
+            "https://github.com/",
+            "ssh://git@github.com/",
+            "git@github.com:",
+        ]
+        .into_iter()
+        .find_map(|prefix| url.strip_prefix(prefix))?,
+        Source::Path(_) => return None,
+    };
+    let repo = repo.trim_end_matches('/');
+    Some(
+        repo.strip_suffix(".git")
+            .unwrap_or(repo)
+            .to_ascii_lowercase(),
+    )
 }
 fn text(path: &Path) -> Result<Option<String>, Diagnostic> {
     match fs::read_to_string(path) {
@@ -154,7 +249,8 @@ pub fn installed_plugins(
             .map(PathBuf::from);
         return Ok(crate::plugin_enumeration::read(harness, real_home.as_deref(), home)?.user);
     }
-    let mut installed = std::collections::BTreeSet::new();
+    // Directory-only installs are also native installs, even without a toggle entry.
+    let mut installed = crate::plugin_enumeration::read(harness, None, home)?.user;
     for file in ["config.json", "settings.json"] {
         let path = home.directory.join(file);
         let Some(config) = crate::plugin_enumeration::copilot_json(&path)? else {

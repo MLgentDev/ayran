@@ -76,6 +76,11 @@ pub fn apply(
             let Some(entries) = entries.as_object() else {
                 return Ok(());
             };
+            skills.native_layers.extend(
+                entries
+                    .keys()
+                    .map(|name| (name.clone(), path.display().to_string())),
+            );
             overrides.extend(
                 entries
                     .iter()
@@ -88,6 +93,13 @@ pub fn apply(
             };
             // Native denies accumulate across layers. Command/URL matchers are
             // deliberately excluded: they do not prove a particular name off.
+            for name in entries
+                .iter()
+                .filter_map(|entry| entry.get("serverName").and_then(serde_json::Value::as_str))
+            {
+                mcp.native_layers
+                    .insert(name.into(), path.display().to_string());
+            }
             denied.extend(entries.iter().filter_map(|entry| {
                 entry
                     .get("serverName")

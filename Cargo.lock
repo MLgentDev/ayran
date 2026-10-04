@@ -136,13 +136,14 @@ dependencies = [
 
 [[package]]
 name = "ayran-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axoupdater",
  "ayran-core",
  "chrono",
  "clap",
  "filetime",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
@@ -157,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "ayran-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

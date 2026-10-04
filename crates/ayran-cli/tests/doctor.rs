@@ -433,7 +433,7 @@ fn codex_definition_collisions_include_project_servers_and_reachability() {
     fs::create_dir(w.0.path().join(".codex")).unwrap();
     fs::write(
         w.0.path().join(".codex/config.toml"),
-        "[mcp_servers.files]\ncommand='files'\n",
+        "[mcp_servers.files]\ncommand='different-files'\n",
     )
     .unwrap();
     for (default, severity, status) in [(false, "warning", 0), (true, "error", 1)] {
@@ -554,7 +554,23 @@ fn doctor_groups_claude_shadows_and_inventory_notes_keep_launch_severity() {
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let leaks = json["diagnostics"].as_array().unwrap();
+    let diagnostics = json["diagnostics"].as_array().unwrap();
+    let leaks: Vec<_> = diagnostics.iter().filter(|d| d["code"] == "leak").collect();
+    let advice: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d["code"] == "native-skill-unbound")
+        .collect();
+    assert_eq!(advice.len(), 2);
+    for name in ["review", "tdd"] {
+        let note = advice.iter().find(|d| d["item"] == name).unwrap();
+        assert_eq!(note["severity"], "note");
+        assert!(
+            note["message"]
+                .as_str()
+                .unwrap()
+                .contains("native skill disable")
+        );
+    }
     assert_eq!(leaks.len(), 3, "{json}");
     for (cause, item, severity) in [
         ("claude-project-shadow", "review, tdd", "warning"),

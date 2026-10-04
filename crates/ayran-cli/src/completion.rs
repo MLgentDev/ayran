@@ -114,7 +114,11 @@ fn complete_described(
             if alias_selected {
                 return Vec::new();
             }
-            if command.get_name() == "plugin" && matches!(*word, "enable" | "disable") {
+            if matches!(command.get_name(), "plugin" | "skill" | "mcp")
+                && matches!(*word, "enable" | "disable")
+            {
+                context.native_skill = command.get_name() == "skill";
+                context.native_mcp = command.get_name() == "mcp";
                 context.native_state = Some(if *word == "disable" {
                     crate::native_plugins::NativeState::On
                 } else {
@@ -247,6 +251,8 @@ struct CompletionContext<'a> {
     no_defaults: bool,
     native_state: Option<crate::native_plugins::NativeState>,
     native_id: bool,
+    native_skill: bool,
+    native_mcp: bool,
 }
 
 impl<'a> CompletionContext<'a> {
@@ -267,12 +273,14 @@ impl<'a> CompletionContext<'a> {
             no_defaults: false,
             native_state: None,
             native_id: false,
+            native_skill: false,
+            native_mcp: false,
         }
     }
 
     fn observe(&mut self, arg: &clap::Arg, value: &str) {
         let name = match arg.get_id().as_str() {
-            "mcp" => {
+            "mcp" | "install-mcp" => {
                 self.selected_mcp
                     .extend(value.split(',').map(str::to_owned));
                 return;
@@ -282,7 +290,7 @@ impl<'a> CompletionContext<'a> {
                     .extend(value.split(',').map(str::to_owned));
                 return;
             }
-            "skill" => {
+            "skill" | "install-skill" => {
                 self.selected_skills
                     .extend(value.split(',').map(str::to_owned));
                 return;
@@ -445,7 +453,7 @@ impl<'a> CompletionContext<'a> {
                 MemberKind::Skill => {
                     for (name, skill) in &layer.skills {
                         let usable = harness.is_none_or(|h| match skill.value.binding(h) {
-                            Some(SkillBinding::Native(_)) => true,
+                            Some(SkillBinding::Native(_) | SkillBinding::Git(_)) => true,
                             Some(SkillBinding::Path(_)) => h != Harness::Codex,
                             Some(SkillBinding::Absent) | None => false,
                         });
@@ -817,6 +825,63 @@ fn value_candidates(
     prefix: &str,
     context: &CompletionContext<'_>,
 ) -> Vec<Candidate> {
+    if arg.get_id() == "install-skill" {
+        let mut skills = std::collections::BTreeMap::new();
+        for layer in context.layers {
+            skills.extend(layer.skills.iter());
+        }
+        return skills
+            .into_iter()
+            .filter(|(name, skill)| {
+                name.starts_with(prefix)
+                    && !context.selected_skills.contains(name)
+                    && ayran_core::doctor::HARNESSES
+                        .into_iter()
+                        .filter(|h| context.explicit.is_none_or(|s| s == *h))
+                        .any(|h| {
+                            matches!(
+                                skill.value.binding(h),
+                                Some(
+                                    ayran_core::config::SkillBinding::Native(_)
+                                        | ayran_core::config::SkillBinding::Git(_)
+                                        | ayran_core::config::SkillBinding::Path(_)
+                                )
+                            )
+                        })
+            })
+            .map(|(name, s)| {
+                Candidate::new(
+                    name,
+                    s.value.description.as_deref().unwrap_or("Skill snapshot"),
+                )
+            })
+            .collect();
+    }
+    if arg.get_id() == "install-mcp" {
+        let mut servers = std::collections::BTreeMap::new();
+        for layer in context.layers {
+            servers.extend(layer.mcp.iter());
+        }
+        return servers
+            .into_iter()
+            .filter(|(name, server)| {
+                name.starts_with(prefix)
+                    && !context.selected_mcp.contains(name)
+                    && ayran_core::doctor::HARNESSES
+                        .into_iter()
+                        .filter(|h| context.explicit.is_none_or(|s| s == *h))
+                        .any(|h| {
+                            matches!(
+                                server.value.binding(h),
+                                Some(McpBinding::Native(_) | McpBinding::Definition(_))
+                            )
+                        })
+            })
+            .map(|(name, s)| {
+                Candidate::new(name, s.value.description.as_deref().unwrap_or("MCP server"))
+            })
+            .collect();
+    }
     if arg.get_id() == "native-names" {
         let Some(state) = context.native_state else {
             return Vec::new();
@@ -828,6 +893,32 @@ fn value_candidates(
             .into_iter()
             .filter(|h| context.explicit.is_none_or(|selected| selected == *h))
             .collect::<Vec<_>>();
+        if context.native_skill {
+            return crate::native_skills::completion(
+                &layers,
+                &harnesses,
+                state,
+                context.native_id,
+                context.explicit.is_some(),
+            )
+            .into_iter()
+            .filter(|(n, _)| n.starts_with(prefix))
+            .map(|(n, d)| Candidate::new(n, d))
+            .collect();
+        }
+        if context.native_mcp {
+            return crate::native_mcp::completion(
+                &layers,
+                &harnesses,
+                state,
+                context.native_id,
+                context.explicit.is_some(),
+            )
+            .into_iter()
+            .filter(|(n, _)| n.starts_with(prefix))
+            .map(|(n, d)| Candidate::new(n, d))
+            .collect();
+        }
         let Ok(plugins) = crate::native_plugins::read(&layers, &harnesses) else {
             return Vec::new();
         };

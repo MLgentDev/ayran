@@ -29,6 +29,9 @@ pub struct SkillState {
     pub aliases: BTreeMap<String, String>,
     /// Codex Skills keyed by canonical SKILL.md path, for path-scoped overrides.
     pub codex: BTreeMap<PathBuf, CodexSkill>,
+    /// Files deciding effective native state, keyed by name or canonical path.
+    pub native_layers: BTreeMap<String, String>,
+    pub codex_layers: BTreeMap<PathBuf, String>,
     /// Effective off paths from user/profile rules.
     pub codex_off: BTreeSet<PathBuf>,
     /// False when profile arguments are ambiguous; preserve all original overrides.
@@ -143,6 +146,21 @@ pub(crate) fn resolve(
                     format!("path {}", path.display()),
                     Some(path.clone()),
                 )
+            }
+            SkillBinding::Git(_) => {
+                return Err(vec![
+                    Diagnostic::error(
+                        "skill-not-installed",
+                        format!("Skill {logical} has no installed owned snapshot"),
+                        Some(&format!("ayran install --skill {logical}")),
+                    )
+                    .for_capability(
+                        harness,
+                        crate::diagnostic::CapabilityKind::Skill,
+                        logical,
+                        &skill.path,
+                    ),
+                ]);
             }
             SkillBinding::Absent => unreachable!("false Bindings are handled during selection"),
         };

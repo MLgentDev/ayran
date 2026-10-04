@@ -47,6 +47,8 @@ impl Change {
 pub struct Plan {
     pub marketplaces: Vec<Change>,
     pub plugins: Vec<Change>,
+    pub mcp: Vec<crate::install_mcp::Change>,
+    pub skills: Vec<crate::install_skills::Change>,
     pub diagnostics: Vec<Diagnostic>,
 }
 impl Plan {

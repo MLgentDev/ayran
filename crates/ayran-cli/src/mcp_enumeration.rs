@@ -22,6 +22,9 @@ pub fn read_codex(
         &mut state.user,
         CodexScope::User(&mut state.enabled_apps),
     )?;
+    state
+        .sources
+        .extend(state.user.iter().map(|name| (name.clone(), "user")));
     let cwd = env::current_dir().map_err(|error| codex_failure(Path::new("."), error))?;
     for directory in crate::codex_config::project_directories(&home, &cwd)? {
         let path = directory.join(".codex/config.toml");
@@ -33,6 +36,7 @@ pub fn read_codex(
             read_codex_config(&path, &mut state.project, CodexScope::Project)?;
         }
     }
+    state.user_definitions = user_definitions(Harness::Codex, harness_home)?;
     Ok(state)
 }
 
@@ -292,6 +296,9 @@ pub fn read_claude(
     let mut state = McpState::default();
     if let Some(config) = read_json_object(&path, Harness::Claude)? {
         read_json_servers(&config, &path, &mut state.user, Harness::Claude)?;
+        state
+            .sources
+            .extend(state.user.iter().map(|name| (name.clone(), "user")));
         if let Some(connectors) = config.get("claudeAiMcpEverConnected") {
             let connectors = connectors
                 .as_array()
@@ -315,7 +322,12 @@ pub fn read_claude(
                 if !local.is_object() {
                     return Err(failure(&path, "current project must be an object"));
                 }
-                read_json_servers(local, &path, &mut state.user, Harness::Claude)?;
+                let mut names = BTreeSet::new();
+                read_json_servers(local, &path, &mut names, Harness::Claude)?;
+                state
+                    .sources
+                    .extend(names.iter().map(|name| (name.clone(), "local")));
+                state.user.extend(names);
                 if let Some(disabled) = local.get("disabledMcpServers") {
                     let disabled = disabled
                         .as_array()
@@ -325,6 +337,9 @@ pub fn read_claude(
                             failure(&path, "disabledMcpServers must contain strings")
                         })?;
                         state.disabled.insert(name.into());
+                        state
+                            .native_layers
+                            .insert(name.into(), path.display().to_string());
                     }
                 }
             }
@@ -337,6 +352,7 @@ pub fn read_claude(
             read_json_servers(&config, &path, &mut state.project, Harness::Claude)?;
         }
     }
+    state.user_definitions = user_definitions(Harness::Claude, harness_home)?;
     Ok(state)
 }
 
@@ -401,4 +417,90 @@ fn json_failure(harness: Harness, path: &Path, message: impl std::fmt::Display) 
         ),
         None,
     )
+}
+
+pub(crate) fn user_definitions(
+    harness: Harness,
+    home: &crate::harness_home::HarnessHome,
+) -> Result<std::collections::BTreeMap<String, Value>, Diagnostic> {
+    let path = match harness {
+        Harness::Claude => home.claude_mcp.clone(),
+        Harness::Codex => home.directory.join("config.toml"),
+        Harness::Copilot => home.directory.join("mcp-config.json"),
+    };
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(_) => {
+            return Err(definition_error(
+                harness,
+                "enumeration-failed",
+                format!("cannot read {}", path.display()),
+            ));
+        }
+    };
+    let config: Value = if harness == Harness::Codex {
+        let value: toml::Table = text.parse().map_err(|_| {
+            definition_error(
+                harness,
+                "enumeration-failed",
+                "invalid Codex MCP configuration",
+            )
+        })?;
+        serde_json::to_value(value).map_err(|_| {
+            definition_error(
+                harness,
+                "enumeration-failed",
+                "invalid Codex MCP configuration",
+            )
+        })?
+    } else {
+        serde_json_lenient::from_str(&text).map_err(|_| {
+            definition_error(harness, "enumeration-failed", "invalid MCP configuration")
+        })?
+    };
+    if !config.is_object() {
+        return Err(definition_error(
+            harness,
+            "enumeration-failed",
+            "MCP configuration must be an object",
+        ));
+    }
+    let key = if harness == Harness::Codex {
+        "mcp_servers"
+    } else {
+        "mcpServers"
+    };
+    let Some(servers) = config.get(key) else {
+        return Ok(Default::default());
+    };
+    let servers = servers.as_object().ok_or_else(|| {
+        definition_error(
+            harness,
+            "enumeration-failed",
+            "MCP servers must be an object",
+        )
+    })?;
+    if servers.values().any(|v| !v.is_object()) {
+        return Err(definition_error(
+            harness,
+            "enumeration-failed",
+            "MCP definitions must be objects",
+        ));
+    }
+    Ok(servers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect())
+}
+
+fn definition_error(
+    harness: Harness,
+    code: &'static str,
+    message: impl std::fmt::Display,
+) -> Diagnostic {
+    Diagnostic {
+        harness: Some(harness),
+        ..Diagnostic::error(code, message.to_string(), None)
+    }
 }

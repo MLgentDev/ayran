@@ -8,45 +8,65 @@ use ayran_core::{
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 pub fn command() -> Command {
-    let mut plugin = Command::new("plugin")
-        .about("Inspect and switch persistent native Plugin state")
-        .subcommand_required(true);
-    for action in ["list", "enable", "disable"] {
-        let mut command = Command::new(action);
-        for h in HARNESSES {
-            command = command.arg(
-                Arg::new(h.binary())
-                    .long(h.binary())
-                    .action(ArgAction::SetTrue),
-            );
+    let toggles = |kind, about| {
+        let mut command = Command::new(kind).about(about).subcommand_required(true);
+        for action in ["list", "enable", "disable"] {
+            let mut subcommand = list_flags(Command::new(action));
+            if action != "list" {
+                subcommand = subcommand
+                    .arg(Arg::new("native-names").required(true).num_args(1..))
+                    .arg(Arg::new("native-id").long("id").action(ArgAction::SetTrue))
+                    .arg(
+                        Arg::new("dry-run")
+                            .long("dry-run")
+                            .action(ArgAction::SetTrue),
+                    );
+            }
+            command = command.subcommand(subcommand);
         }
-        command = command
-            .arg(
-                Arg::new("harness")
-                    .long("harness")
-                    .value_parser(["claude", "codex", "copilot"]),
-            )
-            .group(
-                clap::ArgGroup::new("harness-choice")
-                    .args(["claude", "codex", "copilot", "harness"]),
-            )
-            .arg(Arg::new("json").long("json").action(ArgAction::SetTrue));
-        if action != "list" {
-            command = command
-                .arg(Arg::new("native-names").required(true).num_args(1..))
-                .arg(Arg::new("native-id").long("id").action(ArgAction::SetTrue))
-                .arg(
-                    Arg::new("dry-run")
-                        .long("dry-run")
-                        .action(ArgAction::SetTrue),
-                );
-        }
-        plugin = plugin.subcommand(command);
-    }
+        command
+    };
     Command::new("native")
         .about("Manage Harness-native persistent state")
         .subcommand_required(true)
-        .subcommand(plugin)
+        .subcommand(toggles(
+            "plugin",
+            "Inspect and switch persistent native Plugin state",
+        ))
+        .subcommand(toggles(
+            "skill",
+            "Inspect and switch persistent standalone Skill state",
+        ))
+        .subcommand(toggles(
+            "mcp",
+            "Inspect and switch persistent native MCP server state",
+        ))
+        .subcommand(
+            Command::new("marketplace")
+                .about("Inspect registered native Marketplaces")
+                .subcommand_required(true)
+                .subcommand(list_flags(Command::new("list"))),
+        )
+}
+fn list_flags(mut command: Command) -> Command {
+    for h in HARNESSES {
+        command = command.arg(
+            Arg::new(h.binary())
+                .long(h.binary())
+                .action(ArgAction::SetTrue),
+        );
+    }
+    command = command
+        .arg(
+            Arg::new("harness")
+                .long("harness")
+                .value_parser(["claude", "codex", "copilot"]),
+        )
+        .group(
+            clap::ArgGroup::new("harness-choice").args(["claude", "codex", "copilot", "harness"]),
+        )
+        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue));
+    command
 }
 pub fn selected(matches: &ArgMatches) -> Option<Harness> {
     HARNESSES.into_iter().find(|h| {
@@ -235,13 +255,34 @@ fn write_codex(
     change.outcome = "failed";
     home.materialize()?;
     let path = home.directory.join("config.toml");
-    crate::codex_plugin_write::write(&path, &change.plugin.id, change.after == NativeState::On)?;
+    crate::codex_native_write::write(&path, &change.plugin.id, change.after == NativeState::On)?;
     change.written = Some(path.display().to_string());
     change.outcome = "changed";
     Ok(())
 }
 pub fn run(matches: &ArgMatches) -> i32 {
-    let (_, plugin) = matches.subcommand().unwrap();
+    let (kind, plugin) = matches.subcommand().unwrap();
+    if kind == "skill" && plugin.subcommand().unwrap().0 != "list" {
+        let (action, matches) = plugin.subcommand().unwrap();
+        return crate::native_skills::run(action, matches);
+    }
+    if kind == "mcp" && plugin.subcommand().unwrap().0 != "list" {
+        let (action, matches) = plugin.subcommand().unwrap();
+        return crate::native_mcp::run(action, matches);
+    }
+    if matches!(kind, "skill" | "mcp") {
+        return crate::native_capabilities::run(
+            if kind == "skill" {
+                ayran_core::diagnostic::CapabilityKind::Skill
+            } else {
+                ayran_core::diagnostic::CapabilityKind::Mcp
+            },
+            plugin.subcommand().unwrap().1,
+        );
+    }
+    if kind == "marketplace" {
+        return crate::native_marketplaces::run(plugin.subcommand().unwrap().1);
+    }
     let (action, matches) = plugin.subcommand().unwrap();
     let mut diagnostics = Vec::new();
     let mut rows = Vec::new();

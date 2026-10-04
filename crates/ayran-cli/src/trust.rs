@@ -1,4 +1,4 @@
-//! Marketplace Trust belongs to ayran user state, never to a Harness home.
+//! Install-source Trust belongs to ayran user state, never to a Harness home.
 use ayran_core::{config::ConfigLayers, diagnostic::Diagnostic};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use sha2::{Digest, Sha256};
@@ -62,7 +62,7 @@ impl Store {
     }
 }
 fn fingerprint(path: &Path) -> Result<String, Diagnostic> {
-    // Parse semantically: comments, formatting and all non-Marketplace keys are irrelevant.
+    // Hash install sources semantically; descriptions, Defaults and native Bindings are irrelevant.
     let layer = ConfigLayers::read(path, false)?
         .ok_or_else(|| failure(format!("{} is missing", path.display())))?;
     let declarations: BTreeMap<_, _> = layer
@@ -70,12 +70,61 @@ fn fingerprint(path: &Path) -> Result<String, Diagnostic> {
         .iter()
         .map(|(name, value)| (name, &value.value))
         .collect();
-    let bytes = serde_json::to_vec(&declarations).map_err(failure)?;
+    let definitions: BTreeMap<_, _> = layer
+        .mcp
+        .iter()
+        .filter_map(|(name, server)| {
+            let bindings: BTreeMap<_, _> = ayran_core::doctor::HARNESSES
+                .into_iter()
+                .filter_map(|h| {
+                    if let Some(ayran_core::mcp::McpBinding::Definition(d)) =
+                        server.value.binding(h)
+                    {
+                        Some((h.binary(), d.native_value(h)))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (!bindings.is_empty()).then_some((name, bindings))
+        })
+        .collect();
+    let mut git = BTreeMap::new();
+    let mut paths = BTreeMap::new();
+    for (name, skill) in &layer.skills {
+        let mut git_bindings = BTreeMap::new();
+        let mut bindings = BTreeMap::new();
+        for h in ayran_core::doctor::HARNESSES {
+            if let Some(ayran_core::config::SkillBinding::Git(g)) = skill.value.binding(h) {
+                git_bindings.insert(h.binary(), g);
+            }
+            if let Some(ayran_core::config::SkillBinding::Path(p)) = skill.value.binding(h) {
+                bindings.insert(h.binary(), p.canonicalize().map_err(failure)?);
+            }
+        }
+        if !git_bindings.is_empty() {
+            git.insert(name, git_bindings);
+        }
+        if !bindings.is_empty() {
+            paths.insert(name, bindings);
+        }
+    }
+    // Keep existing Marketplace-only approvals valid until a new source category is declared.
+    let bytes = if !git.is_empty() {
+        serde_json::to_vec(&(declarations, definitions, paths, git))
+    } else if !paths.is_empty() {
+        serde_json::to_vec(&(declarations, definitions, paths))
+    } else if definitions.is_empty() {
+        serde_json::to_vec(&declarations)
+    } else {
+        serde_json::to_vec(&(declarations, definitions))
+    }
+    .map_err(failure)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 pub fn command() -> Command {
     Command::new("trust")
-        .about("Record Trust for a project layer's Marketplace sources")
+        .about("Record Trust for a project layer's install sources")
         .arg(
             Arg::new("path")
                 .value_parser(clap::builder::PathBufValueParser::new())

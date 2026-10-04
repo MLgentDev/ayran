@@ -143,6 +143,13 @@ pub(crate) fn read_root(
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(failure(&skill, error)),
         };
+        if belongs_to_plugin(
+            &skill
+                .canonicalize()
+                .map_err(|error| failure(&skill, error))?,
+        )? {
+            continue;
+        }
         let name = crate::skill_activation::skill_name(&path, &contents)
             .map_err(|diagnostic| failure(&skill, diagnostic.message))?;
         let directory = entry
@@ -155,6 +162,39 @@ pub(crate) fn read_root(
         names.insert(name);
     }
     Ok(())
+}
+
+/// Plugin Skills remain part of their Plugin, including symlinked custom roots.
+pub(crate) fn belongs_to_plugin(skill: &Path) -> Result<bool, Diagnostic> {
+    for directory in skill.parent().into_iter().flat_map(Path::ancestors) {
+        for relative in [
+            ".claude-plugin/plugin.json",
+            ".codex-plugin/plugin.json",
+            ".cursor-plugin/plugin.json",
+            ".plugin/plugin.json",
+            "plugin.json",
+        ] {
+            let path = directory.join(relative);
+            let contents = match fs::read_to_string(&path) {
+                Ok(contents) => contents,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(failure(&path, error)),
+            };
+            if relative != "plugin.json"
+                || serde_json::from_str::<serde_json::Value>(&contents)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("$schema")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|schema| schema.starts_with("https://agent-plugins.org/schemas/"))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn failure(path: &Path, message: impl std::fmt::Display) -> Diagnostic {

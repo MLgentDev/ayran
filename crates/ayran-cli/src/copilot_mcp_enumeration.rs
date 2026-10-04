@@ -18,6 +18,14 @@ pub fn read(harness_home: &crate::harness_home::HarnessHome) -> Result<McpState,
         read_json_servers(&config, &path, &mut state.user, Harness::Copilot)?;
     }
     read_disabled(&home.join("settings.json"), &mut state.copilot_user_off)?;
+    state
+        .native_layers
+        .extend(state.copilot_user_off.iter().map(|name| {
+            (
+                name.clone(),
+                home.join("settings.json").display().to_string(),
+            )
+        }));
     let cwd = env::current_dir().map_err(|error| failure(Path::new("."), error))?;
     for directory in cwd.ancestors() {
         for relative in [
@@ -36,10 +44,12 @@ pub fn read(harness_home: &crate::harness_home::HarnessHome) -> Result<McpState,
             break;
         }
     }
+    state.user_definitions =
+        crate::mcp_enumeration::user_definitions(Harness::Copilot, harness_home)?;
     Ok(state)
 }
 
-fn read_disabled(path: &Path, names: &mut BTreeSet<String>) -> Result<(), Diagnostic> {
+pub(crate) fn read_disabled(path: &Path, names: &mut BTreeSet<String>) -> Result<(), Diagnostic> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),

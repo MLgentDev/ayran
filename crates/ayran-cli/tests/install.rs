@@ -196,7 +196,6 @@ if args[:3] == ['plugin', 'marketplace', 'add']:
     source = args[3]
     ref = args[5] if args[4:5] == ['--ref'] else None
     name = 'acme'
-    kind = 'github'
     if source.startswith('/'):
         kind = 'local'
         for manifest in ['.agents/plugins/marketplace.json', '.agents/plugins/api_marketplace.json', '.claude-plugin/marketplace.json']:
@@ -206,6 +205,10 @@ if args[:3] == ['plugin', 'marketplace', 'add']:
                 break
     elif source.startswith(('https://', 'ssh://', 'git@')):
         kind = 'git'
+    else:
+        # Codex 0.160.0 records GitHub shorthand as a git URL.
+        kind = 'git'
+        source = 'https://github.com/' + source + '.git'
     config += '\n[marketplaces.' + name + ']\nsource_type=' + json.dumps(kind) + '\nsource=' + json.dumps(source) + '\n'
     if ref:
         config += 'ref=' + json.dumps(ref) + '\n'
@@ -459,6 +462,26 @@ claude='only@acme'
     let output = w.run(&["install", "review", "--codex", "--dry-run"]);
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("review@acme-agents"));
+}
+
+#[test]
+fn codex_git_url_registration_matches_github_shorthand() {
+    let w = Workspace::new();
+    w.harness("codex", "0.160.0");
+    w.write("user.toml", "[marketplaces.acme]\ncodex={source='github:Acme/agents'}\n[plugins.review]\ncodex='review@acme'\n");
+    w.write(
+        ".codex/config.toml",
+        "[marketplaces.acme]\nsource_type='git'\nsource='https://github.com/acme/agents.git'\n",
+    );
+    let output = w.json(&["install", "--codex", "--dry-run", "--json"], 0);
+    assert_eq!(output["marketplaces"][0]["outcome"], "unchanged");
+    assert!(!codes(&output).contains(&"marketplace-conflict"));
+    w.write(
+        ".codex/config.toml",
+        "[marketplaces.acme]\nsource_type='git'\nsource='https://github.com/acme/other.git'\n",
+    );
+    let output = w.json(&["install", "--codex", "--dry-run", "--json"], 3);
+    assert!(codes(&output).contains(&"marketplace-conflict"));
 }
 
 #[test]

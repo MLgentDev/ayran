@@ -2,7 +2,7 @@ mod claude_config;
 mod cli;
 mod codex_config;
 mod codex_link;
-mod codex_plugin_write;
+mod codex_native_write;
 mod codex_skill_enumeration;
 mod completion;
 mod config_command;
@@ -13,15 +13,22 @@ mod generated_cache;
 mod harness_home;
 mod harness_version;
 mod install_command;
+mod install_mcp;
 mod install_plan;
+mod install_skills;
 mod install_write;
 mod list_command;
 mod marketplace_list;
 mod marketplace_state;
 mod mcp_activation;
 mod mcp_enumeration;
+mod native_capabilities;
 mod native_command;
+mod native_marketplaces;
+mod native_mcp;
 mod native_plugins;
+mod native_skill_write;
+mod native_skills;
 mod plugin_contents;
 mod plugin_enumeration;
 mod session_command;
@@ -29,6 +36,8 @@ mod session_list;
 mod session_store;
 mod skill_activation;
 mod skill_enumeration;
+mod skill_git;
+mod skill_snapshot;
 mod trust;
 mod update_command;
 
@@ -200,7 +209,7 @@ fn run() -> i32 {
     } else {
         None
     };
-    let layers = match ConfigLayers::load() {
+    let mut layers = match ConfigLayers::load() {
         Ok(layers) => layers,
         Err(diagnostic) => {
             render(&diagnostic, quiet);
@@ -307,6 +316,7 @@ fn run() -> i32 {
                 }
             }
         }
+        let snapshot_diagnostics = skill_snapshot::apply(&mut layers, harness, &home.directory);
         let selected = ayran_core::skills::select(&request, &layers, harness)?;
         let names = selected.names();
         let mut skills = skill_activation::read(&names, &layers, harness)
@@ -370,7 +380,15 @@ fn run() -> i32 {
         } else {
             Ok(plan)
         };
-        plan.map(|plan| (harness, plan))
+        plan.map(|mut plan| {
+            plan.diagnostics
+                .extend(snapshot_diagnostics.into_iter().filter(|d| {
+                    d.capability
+                        .as_ref()
+                        .is_some_and(|c| names.contains(&c.name))
+                }));
+            (harness, plan)
+        })
     });
     let (harness, mut plan) = match resolution {
         Ok(plan) => plan,

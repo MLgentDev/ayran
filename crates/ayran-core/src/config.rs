@@ -69,7 +69,15 @@ impl Plugin {
 pub enum SkillBinding {
     Native(String),
     Path(PathBuf),
+    Git(GitSkillBinding),
     Absent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GitSkillBinding {
+    pub source: String,
+    pub r#ref: Option<String>,
+    pub subdir: String,
 }
 
 #[derive(Default)]
@@ -703,21 +711,7 @@ impl ConfigLayers {
                             let key = format!("skills.{name}.{field}");
                             match field.as_str() {
                                 "all" | "claude" | "codex" | "copilot" => {
-                                    let binding = match parse_plugin_binding(value, path, &key)? {
-                                        PluginBinding::Native(id) => {
-                                            if id.contains(':') {
-                                                return Err(invalid(
-                                                    path,
-                                                    format!(
-                                                        "{key}: native Skill Bindings cannot contain ':'"
-                                                    ),
-                                                ));
-                                            }
-                                            SkillBinding::Native(id)
-                                        }
-                                        PluginBinding::Path(path) => SkillBinding::Path(path),
-                                        PluginBinding::Absent => SkillBinding::Absent,
-                                    };
+                                    let binding = parse_skill_binding(value, path, &key)?;
                                     let slot = match field.as_str() {
                                         "all" => &mut skill.all,
                                         "claude" => &mut skill.claude,
@@ -1098,4 +1092,102 @@ fn parse_args(value: &toml::Value, path: &Path, field: &str) -> Result<Vec<Strin
         ));
     }
     Ok(args)
+}
+
+fn parse_skill_binding(
+    value: &toml::Value,
+    path: &Path,
+    field: &str,
+) -> Result<SkillBinding, Diagnostic> {
+    if let Some(fields) = value.as_table().filter(|f| f.contains_key("source")) {
+        if fields
+            .keys()
+            .any(|k| !matches!(k.as_str(), "source" | "ref" | "subdir"))
+        {
+            return Err(invalid(path, format!("{field}: unknown git Binding key")));
+        }
+        let string = |key: &str| -> Result<Option<String>, Diagnostic> {
+            fields
+                .get(key)
+                .map(|v| {
+                    v.as_str()
+                        .filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            invalid(path, format!("{field}.{key} must be a non-empty string"))
+                        })
+                })
+                .transpose()
+        };
+        let source = string("source")?.unwrap();
+        let github = source.strip_prefix("github:").is_some_and(|s| {
+            let parts: Vec<_> = s.split('/').collect();
+            parts.len() == 2
+                && parts.iter().all(|p| {
+                    !p.is_empty()
+                        && *p != "."
+                        && *p != ".."
+                        && p.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                })
+        });
+        let scp = source
+            .strip_prefix("git@")
+            .and_then(|s| s.split_once(':'))
+            .is_some_and(|(host, path)| {
+                !host.is_empty()
+                    && !host.starts_with('-')
+                    && !path.is_empty()
+                    && host
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                    && !path.chars().any(char::is_whitespace)
+            });
+        if !github
+            && !scp
+            && !["https://", "ssh://"].iter().any(|prefix| {
+                source
+                    .strip_prefix(prefix)
+                    .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_whitespace))
+            })
+        {
+            return Err(invalid(
+                path,
+                format!("{field}.source must be a remote git source"),
+            ));
+        }
+        let reference = string("ref")?;
+        if reference.as_ref().is_some_and(|r| r.starts_with('-')) {
+            return Err(invalid(path, format!("{field}.ref cannot start with '-'")));
+        }
+        let subdir = string("subdir")?.unwrap_or_else(|| ".".into());
+        if subdir.starts_with('/')
+            || subdir.contains('\\')
+            || subdir.contains(':')
+            || subdir.split('/').any(|p| p == ".." || p == ".git")
+        {
+            return Err(invalid(
+                path,
+                format!("{field}.subdir must stay inside the repository"),
+            ));
+        }
+        return Ok(SkillBinding::Git(GitSkillBinding {
+            source,
+            r#ref: reference,
+            subdir,
+        }));
+    }
+    Ok(match parse_plugin_binding(value, path, field)? {
+        PluginBinding::Native(id) => {
+            if id.contains(':') {
+                return Err(invalid(
+                    path,
+                    format!("{field}: native Skill Bindings cannot contain ':'"),
+                ));
+            }
+            SkillBinding::Native(id)
+        }
+        PluginBinding::Path(p) => SkillBinding::Path(p),
+        PluginBinding::Absent => SkillBinding::Absent,
+    })
 }

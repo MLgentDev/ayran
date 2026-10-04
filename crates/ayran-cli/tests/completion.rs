@@ -1940,3 +1940,30 @@ fn completion_offers_harness_args_suppression_on_launch_and_resume() {
         assert_completion(home.complete(&words), "--no-harness-args\n");
     }
 }
+
+#[test]
+fn native_marketplace_list_completes_commands_and_flags() {
+    let home = TestHome::new();
+    let output = home.complete(&["ayran", "native", "market"]);
+    assert_completion(output, "marketplace\n");
+    assert_completion(
+        home.complete(&["ayran", "native", "marketplace", "li"]),
+        "list\n",
+    );
+    let output = home.complete(&["ayran", "native", "marketplace", "list", "--ha"]);
+    assert_completion(output, "--harness\n");
+}
+
+#[test]
+fn native_skill_and_mcp_lists_complete_commands_and_flags() {
+    let home = TestHome::new();
+    for kind in ["skill", "mcp"] {
+        assert_completion(home.complete(&["ayran", "native", kind, "li"]), "list\n");
+        let output = home.complete(&["ayran", "native", kind, "list", "--ha"]);
+        assert_completion(output, "--harness\n");
+        assert_completion(
+            home.complete(&["ayran", "native", kind, "list", "--harness", "co"]),
+            "codex\ncopilot\n",
+        );
+    }
+}

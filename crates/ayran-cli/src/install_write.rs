@@ -79,7 +79,7 @@ pub fn execute(layers: &ConfigLayers, plan: &mut Plan) {
                 &crate::install_plan::plugin_args(change.harness, &change.id),
             )?;
             let disable = if change.harness == Harness::Codex {
-                crate::codex_plugin_write::write(
+                crate::codex_native_write::write(
                     &home.directory.join("config.toml"),
                     &change.id,
                     false,

@@ -179,6 +179,16 @@ pub fn reachable_plugins(
     installed: &[Harness],
     harness: Harness,
 ) -> BTreeSet<String> {
+    reachable_capabilities(layers, installed, harness, CapabilityKind::Plugin)
+}
+
+/// Logical Capabilities reachable through Defaults, Profiles or Aliases.
+pub fn reachable_capabilities(
+    layers: &ConfigLayers,
+    installed: &[Harness],
+    harness: Harness,
+    capability: CapabilityKind,
+) -> BTreeSet<String> {
     let state = DoctorState {
         installed: installed.to_vec(),
         ..Default::default()
@@ -186,7 +196,7 @@ pub fn reachable_plugins(
     reachable(layers, &state, harness)
         .members
         .into_iter()
-        .filter_map(|(kind, name)| (kind == CapabilityKind::Plugin).then_some(name))
+        .filter_map(|(kind, name)| (kind == capability).then_some(name))
         .collect()
 }
 fn gap(
@@ -561,6 +571,36 @@ fn check_bindings(
                     state.skill_names.get(path).map(|n| (n.clone(), false))
                 }
             }
+            Some(SkillBinding::Git(binding)) => {
+                let mut d = gap(
+                    "skill-not-installed",
+                    format!("Skill {logical} has no installed owned snapshot"),
+                    CapabilityKind::Skill,
+                    logical,
+                    &skill.path,
+                    harness,
+                    reachable,
+                );
+                d.hint = Some(format!("ayran install --skill {logical}"));
+                diagnostics.push(d);
+                if binding.r#ref.is_none() {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Note,
+                        ..Diagnostic::error(
+                            "skill-unpinned",
+                            format!("Skill {logical} follows the default branch"),
+                            None,
+                        )
+                        .for_capability(
+                            harness,
+                            CapabilityKind::Skill,
+                            logical,
+                            &skill.path,
+                        )
+                    });
+                }
+                None
+            }
             Some(SkillBinding::Native(name)) => Some((name.clone(), true)),
             _ => None,
         };
@@ -756,11 +796,12 @@ fn check_native_bindings(
                 missing.push((CapabilityKind::Mcp, name, &server.path, id));
             }
             if harness == Harness::Codex
-                && matches!(
-                    server.value.binding(harness),
-                    Some(McpBinding::Definition(_))
-                )
-                && (servers.user.contains(name) || servers.project.contains(name))
+                && let Some(McpBinding::Definition(d)) = server.value.binding(harness)
+                && (servers.project.contains(name)
+                    || servers.user.contains(name)
+                        && !servers.user_definitions.get(name).is_some_and(|actual| {
+                            crate::mcp::same_definition(actual, &d.native_value(harness), harness)
+                        }))
             {
                 let mut d = gap(
                     "mcp-definition-collision",

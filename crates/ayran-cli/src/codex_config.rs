@@ -127,6 +127,30 @@ pub(crate) fn apply(
         )?;
         enabled_values(&config, "plugins", &path, &mut plugin_enabled)?;
         enabled_values(&config, "mcp_servers", &path, &mut server_enabled)?;
+        if let Some(servers) = config.get("mcp_servers").and_then(toml::Value::as_table) {
+            for (name, server) in servers {
+                if path != home.directory.join("config.toml")
+                    && server
+                        .as_table()
+                        .is_some_and(|t| t.keys().any(|key| key != "enabled"))
+                {
+                    // A profile transport overrides the user definition; do not adopt the user copy.
+                    mcp.user_definitions.remove(name);
+                }
+                mcp.sources.insert((
+                    name.clone(),
+                    if path == home.directory.join("config.toml") {
+                        "user"
+                    } else {
+                        "profile"
+                    },
+                ));
+                if server.get("enabled").is_some() {
+                    mcp.native_layers
+                        .insert(name.clone(), path.display().to_string());
+                }
+            }
+        }
         read_skill_rules(&config, &path, &mut rules, skills)?;
     }
     // Trust is deliberately ignored: any project value makes the proof uncertain.
@@ -150,6 +174,12 @@ pub(crate) fn apply(
         enabled_values(&config, "mcp_servers", &path, &mut project_servers)?;
         plugin_enabled.retain(|id, _| !project_plugins.contains_key(id));
         server_enabled.retain(|id, _| !project_servers.contains_key(id));
+        for id in project_servers.keys() {
+            mcp.native_layers.insert(
+                id.clone(),
+                format!("{} (project trust uncertain)", path.display()),
+            );
+        }
     }
     if profiles.len() <= 1 {
         plugins.codex_enabled = plugin_enabled;
@@ -160,6 +190,7 @@ pub(crate) fn apply(
         for rule in &rules {
             if rule.matches(path, &skill.name) {
                 skill.personal = true;
+                skills.codex_layers.insert(path.clone(), rule.layer.clone());
                 if rule.enabled {
                     skills.codex_off.remove(path);
                 } else {
@@ -200,6 +231,7 @@ struct SkillRule {
     path: Option<PathBuf>,
     name: Option<String>,
     enabled: bool,
+    layer: String,
 }
 
 impl SkillRule {
@@ -253,6 +285,7 @@ fn read_skill_rules(
             path: selector,
             name,
             enabled,
+            layer: path.display().to_string(),
         });
     }
     Ok(())

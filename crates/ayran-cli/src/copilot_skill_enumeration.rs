@@ -1,6 +1,5 @@
 //! Read-only discovery of Copilot standalone Skills.
 
-use std::collections::BTreeMap;
 use std::env;
 use std::path::Path;
 
@@ -43,7 +42,7 @@ pub fn read(
                     read_root(
                         &cwd.join(directory),
                         &mut state.custom,
-                        &mut BTreeMap::new(),
+                        &mut state.aliases,
                         Harness::Copilot,
                     )?;
                 }
@@ -67,7 +66,7 @@ pub fn read(
         read_root(
             root,
             &mut state.personal,
-            &mut BTreeMap::new(),
+            &mut state.aliases,
             Harness::Copilot,
         )?;
     }
@@ -81,7 +80,7 @@ pub fn read(
                 read_root(
                     &root,
                     &mut state.project,
-                    &mut BTreeMap::new(),
+                    &mut state.aliases,
                     Harness::Copilot,
                 )?;
             }

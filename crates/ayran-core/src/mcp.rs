@@ -30,6 +30,123 @@ pub enum McpDefinition {
     },
 }
 
+impl McpDefinition {
+    /// Native configuration with references preserved, never expanded from the environment.
+    pub fn native_value(&self, harness: Harness) -> serde_json::Value {
+        match self {
+            McpDefinition::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+            } => {
+                if harness == Harness::Codex {
+                    serde_json::json!({"command": command, "args": args, "env": env, "env_vars": env_vars})
+                } else {
+                    let mut env = env.clone();
+                    for variable in env_vars {
+                        env.insert(variable.clone(), format!("${{{variable}}}"));
+                    }
+                    let mut value =
+                        serde_json::json!({"command": command, "args": args, "env": env});
+                    if harness == Harness::Copilot {
+                        value["type"] = "local".into();
+                        value["tools"] = serde_json::json!(["*"]);
+                    }
+                    value
+                }
+            }
+            McpDefinition::Http {
+                url,
+                headers,
+                env_headers,
+                bearer_token_env,
+            } => {
+                if harness == Harness::Codex {
+                    let mut value = serde_json::json!({"url": url, "http_headers": headers, "env_http_headers": env_headers});
+                    if let Some(variable) = bearer_token_env {
+                        value["bearer_token_env_var"] = variable.clone().into();
+                    }
+                    value
+                } else {
+                    let mut headers = headers.clone();
+                    for (header, variable) in env_headers {
+                        headers.insert(header.clone(), format!("${{{variable}}}"));
+                    }
+                    if let Some(variable) = bearer_token_env {
+                        headers.insert("Authorization".into(), format!("Bearer ${{{variable}}}"));
+                    }
+                    let mut value =
+                        serde_json::json!({"type": "http", "url": url, "headers": headers});
+                    if harness == Harness::Copilot {
+                        value["tools"] = serde_json::json!(["*"]);
+                    }
+                    value
+                }
+            }
+        }
+    }
+}
+
+/// Compare the transport definition, ignoring native defaults and state controls.
+/// Unknown fields remain in the comparison, so they cannot be silently adopted.
+pub fn same_definition(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+    harness: Harness,
+) -> bool {
+    fn normalize(mut value: serde_json::Value, harness: Harness) -> serde_json::Value {
+        if let Some(object) = value.as_object_mut() {
+            if harness == Harness::Codex {
+                object.remove("enabled");
+            }
+            let maps: &[&str] = if harness == Harness::Codex {
+                &["env", "http_headers", "env_http_headers"]
+            } else {
+                &["env", "headers"]
+            };
+            for key in maps {
+                if object
+                    .get(*key)
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(serde_json::Map::is_empty)
+                {
+                    object.remove(*key);
+                }
+            }
+            if object
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                object.remove("args");
+            }
+            if harness == Harness::Codex
+                && let Some(vars) = object
+                    .get_mut("env_vars")
+                    .and_then(serde_json::Value::as_array_mut)
+            {
+                vars.sort_by_key(|v| v.as_str().map(str::to_owned));
+                vars.dedup();
+                if vars.is_empty() {
+                    object.remove("env_vars");
+                }
+            }
+            if harness == Harness::Claude
+                && object.get("type").and_then(serde_json::Value::as_str) == Some("stdio")
+            {
+                object.remove("type");
+            }
+            if harness == Harness::Copilot && object.get("tools") == Some(&serde_json::json!(["*"]))
+            {
+                object.remove("tools");
+            }
+        }
+        value
+    }
+    normalize(actual.clone(), harness) == normalize(expected.clone(), harness)
+}
+
 #[derive(Default)]
 pub struct McpServer {
     pub all: Option<McpBinding>,
@@ -279,6 +396,11 @@ fn parse_binding(
 pub struct McpState {
     /// User and user-private local servers active for this working directory.
     pub user: BTreeSet<String>,
+    /// Exact user definitions, for safely selecting an identical installed definition.
+    pub user_definitions: BTreeMap<String, serde_json::Value>,
+    /// Files deciding native state and discovery scope for native listings.
+    pub native_layers: BTreeMap<String, String>,
+    pub sources: BTreeSet<(String, &'static str)>,
     /// Proven effective Codex user/profile values.
     pub codex_enabled: BTreeMap<String, bool>,
     /// Claude names proven off by native settings or per-project toggles.
@@ -416,6 +538,20 @@ pub(crate) fn resolve<'a>(
                 ),
             ]
         })?;
+        let installed_binding = if let McpBinding::Definition(d) = binding {
+            state
+                .user_definitions
+                .get(name)
+                .filter(|actual| {
+                    !state.project.contains(name)
+                        && !state.plugins.contains(name)
+                        && same_definition(actual, &d.native_value(harness), harness)
+                })
+                .map(|_| McpBinding::Native(name.clone()))
+        } else {
+            None
+        };
+        let binding = installed_binding.as_ref().unwrap_or(binding);
         let detail = match binding {
             McpBinding::Absent if !origin.is_direct_selection() => {
                 let message = format!(
@@ -581,64 +717,12 @@ pub(crate) fn resolve<'a>(
                         ..Diagnostic::default()
                     });
                 }
-                let value = match definition {
-                    McpDefinition::Stdio {
-                        command,
-                        args,
-                        env,
-                        env_vars,
-                    } => {
-                        if Path::new(command).is_absolute() {
-                            result.command_paths.push(command.into());
-                        }
-                        if harness == Harness::Codex {
-                            serde_json::json!({"command": command, "args": args, "env": env, "env_vars": env_vars})
-                        } else {
-                            let mut env = env.clone();
-                            for variable in env_vars {
-                                env.insert(variable.clone(), format!("${{{variable}}}"));
-                            }
-                            let mut value =
-                                serde_json::json!({"command": command, "args": args, "env": env});
-                            if harness == Harness::Copilot {
-                                value["type"] = "local".into();
-                                value["tools"] = serde_json::json!(["*"]);
-                            }
-                            value
-                        }
-                    }
-                    McpDefinition::Http {
-                        url,
-                        headers,
-                        env_headers,
-                        bearer_token_env,
-                    } => {
-                        if harness == Harness::Codex {
-                            let mut value = serde_json::json!({"url": url, "http_headers": headers, "env_http_headers": env_headers});
-                            if let Some(variable) = bearer_token_env {
-                                value["bearer_token_env_var"] = variable.clone().into();
-                            }
-                            value
-                        } else {
-                            let mut headers = headers.clone();
-                            for (header, variable) in env_headers {
-                                headers.insert(header.clone(), format!("${{{variable}}}"));
-                            }
-                            if let Some(variable) = bearer_token_env {
-                                headers.insert(
-                                    "Authorization".into(),
-                                    format!("Bearer ${{{variable}}}"),
-                                );
-                            }
-                            let mut value =
-                                serde_json::json!({"type": "http", "url": url, "headers": headers});
-                            if harness == Harness::Copilot {
-                                value["tools"] = serde_json::json!(["*"]);
-                            }
-                            value
-                        }
-                    }
-                };
+                if let McpDefinition::Stdio { command, .. } = definition
+                    && Path::new(command).is_absolute()
+                {
+                    result.command_paths.push(command.into());
+                }
+                let value = definition.native_value(harness);
                 if harness == Harness::Codex {
                     let table = toml::Value::try_from(&value)
                         .expect("MCP definition fields are TOML-compatible");

@@ -74,6 +74,9 @@ fn skill_binding_json(binding: Option<&SkillBinding>) -> serde_json::Value {
         Some(SkillBinding::Path(path)) => {
             serde_json::json!({"kind":"path", "path":path.to_string_lossy()})
         }
+        Some(SkillBinding::Git(g)) => {
+            serde_json::json!({"kind":"git", "source":g.source, "ref":g.r#ref, "subdir":g.subdir})
+        }
         Some(SkillBinding::Absent) => serde_json::json!({"kind":"absent"}),
         None => serde_json::Value::Null,
     }
@@ -83,6 +86,7 @@ fn skill_binding_label(binding: Option<&SkillBinding>) -> &str {
     match binding {
         Some(SkillBinding::Native(id)) => id,
         Some(SkillBinding::Path(_)) => "path",
+        Some(SkillBinding::Git(_)) => "git",
         Some(SkillBinding::Absent) => "—",
         None => "✗",
     }

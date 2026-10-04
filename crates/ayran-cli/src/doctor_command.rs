@@ -47,7 +47,7 @@ pub fn run(matches: &ArgMatches) -> i32 {
         .map(std::path::PathBuf::from);
     let mut plugin_inventories = Vec::new();
     let mut headings = std::collections::BTreeMap::new();
-    let (layers, mut diagnostics) = ConfigLayers::load_for_doctor();
+    let (mut layers, mut diagnostics) = ConfigLayers::load_for_doctor();
     for harness in HARNESSES
         .into_iter()
         .filter(|h| filter.is_none_or(|f| f == *h))
@@ -58,6 +58,12 @@ pub fn run(matches: &ArgMatches) -> i32 {
             real_home.as_deref(),
         ) {
             Ok(home) => {
+                diagnostics.extend(crate::install_skills::advice(&layers, harness));
+                diagnostics.extend(crate::skill_snapshot::apply(
+                    &mut layers,
+                    harness,
+                    &home.directory,
+                ));
                 let isolated = home.mode == ayran_core::launch::HomeMode::Isolated;
                 let missing = isolated
                     && matches!(std::fs::metadata(&home.directory),
@@ -262,6 +268,8 @@ pub fn run(matches: &ArgMatches) -> i32 {
         .copied()
         .filter(|h| filter.is_none_or(|f| f == *h))
     {
+        diagnostics.extend(crate::native_skills::advice(&audit_layers, harness));
+        diagnostics.extend(crate::native_mcp::advice(&audit_layers, harness));
         // A failed discovery already carries an error; do not produce advice from incomplete state.
         if let Ok(plugins) = crate::native_plugins::read(&audit_layers, &[harness]) {
             for plugin in plugins
@@ -284,6 +292,7 @@ pub fn run(matches: &ArgMatches) -> i32 {
         .filter(|h| filter.is_none_or(|f| f == *h))
     {
         diagnostics.extend(crate::install_plan::audit(&audit_layers, harness));
+        diagnostics.extend(crate::install_mcp::advice(&audit_layers, harness));
     }
     ayran_core::doctor::order(&mut diagnostics);
     diagnostics.retain(|d| filter.is_none() || d.harness.is_none() || d.harness == filter);

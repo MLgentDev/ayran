@@ -1,18 +1,86 @@
-//! Persistent user-level Codex Plugin toggles, preserving the surrounding TOML.
+//! Persistent user-level Codex Plugin and MCP toggles, preserving surrounding TOML.
 
 use std::{fs, io::Write, path::Path};
 
+use crate::native_plugins::NativeState;
 use ayran_core::{diagnostic::Diagnostic, harness::Harness};
 use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, Item, Value};
 
 pub fn write(path: &Path, id: &str, enabled: bool) -> Result<(), Diagnostic> {
-    write_with_precommit(path, id, enabled, || {})
+    write_toggle(path, "plugins", id, enabled, || {})
+}
+
+pub(crate) fn prepare_mcp(path: &Path, id: &str) -> Result<NativeState, Diagnostic> {
+    let original = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(Diagnostic::error(
+                "native-write-failed",
+                e.to_string(),
+                None,
+            ));
+        }
+    };
+    let doc = original
+        .parse::<DocumentMut>()
+        .map_err(|e| Diagnostic::error("native-write-failed", e.to_string(), None))?;
+    validate(&doc, "mcp_servers", id).map_err(|e| {
+        Diagnostic::error(
+            "native-write-failed",
+            format!("{}: {e}", path.display()),
+            None,
+        )
+    })
+}
+
+pub(crate) fn write_mcp(path: &Path, id: &str, enabled: bool) -> Result<&'static str, Diagnostic> {
+    if prepare_mcp(path, id)? == NativeState::from_enabled(enabled) {
+        return Ok("unchanged");
+    }
+    fs::create_dir_all(path.parent().unwrap())
+        .map_err(|e| Diagnostic::error("native-write-failed", e.to_string(), None))?;
+    write_toggle(path, "mcp_servers", id, enabled, || {})?;
+    Ok("changed")
+}
+
+fn validate(doc: &DocumentMut, key: &str, id: &str) -> Result<NativeState, String> {
+    let Some(items) = doc.get(key) else {
+        return Ok(NativeState::On);
+    };
+    let items = items
+        .as_table_like()
+        .ok_or_else(|| format!("{key} must be a table"))?;
+    let Some(item) = items.get(id) else {
+        return Ok(NativeState::On);
+    };
+    let item = item
+        .as_table_like()
+        .ok_or_else(|| format!("{key}.{id} must be a table"))?;
+    match item.get("enabled") {
+        None => Ok(NativeState::On),
+        Some(value) => value
+            .as_bool()
+            .map(NativeState::from_enabled)
+            .ok_or_else(|| format!("{key}.{id}.enabled must be a boolean")),
+    }
+}
+
+#[cfg(test)]
+fn write_with_precommit(
+    path: &Path,
+    id: &str,
+    enabled: bool,
+    before_commit: impl FnMut(),
+) -> Result<(), Diagnostic> {
+    write_toggle(path, "plugins", id, enabled, before_commit)
 }
 
 // The callback is the filesystem boundary used to exercise concurrent edits.
-fn write_with_precommit(
+fn write_toggle(
     path: &Path,
+    key: &str,
     id: &str,
     enabled: bool,
     mut before_commit: impl FnMut(),
@@ -30,23 +98,8 @@ fn write_with_precommit(
             Err(error) => return Err(failure(&error)),
         };
         let mut document = original.parse::<DocumentMut>().map_err(|e| failure(&e))?;
-        if let Some(plugins) = document.get("plugins") {
-            let plugins = plugins
-                .as_table_like()
-                .ok_or_else(|| failure(&"plugins must be a table"))?;
-            if let Some(plugin) = plugins.get(id) {
-                let plugin = plugin
-                    .as_table_like()
-                    .ok_or_else(|| failure(&"Plugin must be a table"))?;
-                if plugin
-                    .get("enabled")
-                    .is_some_and(|value| value.as_bool().is_none())
-                {
-                    return Err(failure(&"Plugin enabled must be a boolean"));
-                }
-            }
-        }
-        let item = &mut document["plugins"][id]["enabled"];
+        validate(&document, key, id).map_err(|e| failure(&e))?;
+        let item = &mut document[key][id]["enabled"];
         let mut value = Value::from(enabled);
         if let Some(old) = item.as_value() {
             *value.decor_mut() = old.decor().clone();
