@@ -905,7 +905,7 @@ pub fn user_config_path() -> Result<PathBuf, Diagnostic> {
     {
         let base = env::var_os("APPDATA")
             .ok_or_else(|| Diagnostic::error("config-invalid", "APPDATA is not set", None))?;
-        Ok(PathBuf::from(base).join("ayran/ayran.toml"))
+        Ok(PathBuf::from(base).join("ayran").join("ayran.toml"))
     }
     #[cfg(not(windows))]
     {
