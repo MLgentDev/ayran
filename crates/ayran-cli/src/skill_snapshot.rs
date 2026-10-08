@@ -85,11 +85,13 @@ fn hash_entries(entries: BTreeMap<PathBuf, Vec<u8>>) -> Result<String, Diagnosti
 /// Hash the embedded tree using the same identity as installed snapshots.
 pub(crate) fn builtin(name: &str) -> Result<Identity, Diagnostic> {
     let mut entries = BTreeMap::new();
+    // Embedded paths always use `/`; hash them as native paths so they match a walked copy.
+    let native = |relative: &str| relative.split('/').collect::<PathBuf>();
     for relative in crate::builtin_skills::directories() {
-        entries.insert(PathBuf::from(relative), vec![0]);
+        entries.insert(native(relative), vec![0]);
     }
     for (relative, bytes) in crate::builtin_skills::files() {
-        let path = PathBuf::from(relative);
+        let path = native(relative);
         let mut content = vec![1];
         #[cfg(unix)]
         content.extend_from_slice(&0o644_u32.to_le_bytes());
@@ -612,4 +614,18 @@ pub(crate) fn owned_binding(
         }
     }
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn builtin_identity_matches_a_materialized_copy_on_every_platform() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("ayran");
+        assert!(crate::builtin_skills::materialize(&directory).is_ok());
+        let copied = super::hash(&directory).ok();
+        let embedded = super::builtin("ayran").ok().map(|identity| identity.hash);
+        assert!(copied.is_some());
+        assert_eq!(copied, embedded);
+    }
 }
