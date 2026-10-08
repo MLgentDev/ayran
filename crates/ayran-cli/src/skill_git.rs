@@ -22,7 +22,7 @@ pub(crate) fn fetch(binding: &GitSkillBinding, prompting: bool) -> Result<Fetche
         )
     };
     let root = crate::generated_cache::root()
-        .ok_or_else(|| failure("cannot locate ayran cache".into()))?
+        .ok_or_else(|| failure(crate::generated_cache::missing_root_message("ayran")))?
         .join("git-skills");
     fs::create_dir_all(&root).map_err(|e| failure(e.to_string()))?;
     let directory = tempfile::tempdir_in(root).map_err(|e| failure(e.to_string()))?;

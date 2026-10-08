@@ -8,6 +8,11 @@ use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, Item, Value};
 
 pub fn write(path: &Path, id: &str, enabled: bool) -> Result<(), Diagnostic> {
+    write_toggle(path, "plugins", id, Some(enabled), || {})
+}
+
+/// Restore a Plugin's original enabled value, including an omitted native default.
+pub fn restore_plugin(path: &Path, id: &str, enabled: Option<bool>) -> Result<(), Diagnostic> {
     write_toggle(path, "plugins", id, enabled, || {})
 }
 
@@ -41,7 +46,7 @@ pub(crate) fn write_mcp(path: &Path, id: &str, enabled: bool) -> Result<&'static
     }
     fs::create_dir_all(path.parent().unwrap())
         .map_err(|e| Diagnostic::error("native-write-failed", e.to_string(), None))?;
-    write_toggle(path, "mcp_servers", id, enabled, || {})?;
+    write_toggle(path, "mcp_servers", id, Some(enabled), || {})?;
     Ok("changed")
 }
 
@@ -74,7 +79,7 @@ fn write_with_precommit(
     enabled: bool,
     before_commit: impl FnMut(),
 ) -> Result<(), Diagnostic> {
-    write_toggle(path, "plugins", id, enabled, before_commit)
+    write_toggle(path, "plugins", id, Some(enabled), before_commit)
 }
 
 // The callback is the filesystem boundary used to exercise concurrent edits.
@@ -82,7 +87,7 @@ fn write_toggle(
     path: &Path,
     key: &str,
     id: &str,
-    enabled: bool,
+    enabled: Option<bool>,
     mut before_commit: impl FnMut(),
 ) -> Result<(), Diagnostic> {
     let failure = |error: &dyn std::fmt::Display| Diagnostic {
@@ -99,12 +104,21 @@ fn write_toggle(
         };
         let mut document = original.parse::<DocumentMut>().map_err(|e| failure(&e))?;
         validate(&document, key, id).map_err(|e| failure(&e))?;
-        let item = &mut document[key][id]["enabled"];
-        let mut value = Value::from(enabled);
-        if let Some(old) = item.as_value() {
-            *value.decor_mut() = old.decor().clone();
+        if let Some(enabled) = enabled {
+            let item = &mut document[key][id]["enabled"];
+            let mut value = Value::from(enabled);
+            if let Some(old) = item.as_value() {
+                *value.decor_mut() = old.decor().clone();
+            }
+            *item = Item::Value(value);
+        } else if let Some(item) = document
+            .get_mut(key)
+            .and_then(Item::as_table_like_mut)
+            .and_then(|items| items.get_mut(id))
+            .and_then(Item::as_table_like_mut)
+        {
+            item.remove("enabled");
         }
-        *item = Item::Value(value);
         let mut temporary =
             tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(|e| failure(&e))?;
         if let Ok(metadata) = fs::metadata(path) {

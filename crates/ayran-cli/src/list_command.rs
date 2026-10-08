@@ -7,8 +7,8 @@ const HARNESSES: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Copil
 
 pub fn command() -> Command {
     let mut command = Command::new("list")
-        .about("List Plugins, Skills, MCP servers, Profiles and Aliases from the current directory's Config layers")
-        .arg(Arg::new("kind").value_parser(["plugins", "skills", "mcp", "profiles", "aliases", "sessions", "marketplaces"]));
+        .about("List Plugins, Skills, MCP servers, Profiles, Aliases and Presets from the current directory's Config layers")
+        .arg(Arg::new("kind").value_parser(["plugins", "skills", "mcp", "profiles", "aliases", "presets", "sessions", "marketplaces"]));
     for harness in HARNESSES {
         command = command.arg(
             Arg::new(harness.binary())
@@ -74,6 +74,7 @@ fn skill_binding_json(binding: Option<&SkillBinding>) -> serde_json::Value {
         Some(SkillBinding::Path(path)) => {
             serde_json::json!({"kind":"path", "path":path.to_string_lossy()})
         }
+        Some(SkillBinding::Builtin(name)) => serde_json::json!({"kind":"builtin", "name":name}),
         Some(SkillBinding::Git(g)) => {
             serde_json::json!({"kind":"git", "source":g.source, "ref":g.r#ref, "subdir":g.subdir})
         }
@@ -87,6 +88,7 @@ fn skill_binding_label(binding: Option<&SkillBinding>) -> &str {
         Some(SkillBinding::Native(id)) => id,
         Some(SkillBinding::Path(_)) => "path",
         Some(SkillBinding::Git(_)) => "git",
+        Some(SkillBinding::Builtin(_)) => "builtin",
         Some(SkillBinding::Absent) => "—",
         None => "✗",
     }
@@ -138,7 +140,7 @@ pub(crate) fn json_envelope(
 ) -> serde_json::Value {
     use ayran_core::diagnostic::Severity;
     serde_json::json!({
-        "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "aliases":[], "sessions":[], "marketplaces":[],
+        "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "aliases":[], "presets":[], "sessions":[], "marketplaces":[],
         "diagnostics":diagnostics,
         "summary":{
             "errors":diagnostics.iter().filter(|d| matches!(d.severity, Severity::Error)).count(),
@@ -210,7 +212,7 @@ pub fn run(matches: &ArgMatches) -> i32 {
         }).collect();
         let skills: Vec<_> = layers.skills.iter().filter(|_| kind.is_none_or(|kind| kind == "skills")).map(|(name, skill)| {
             let bindings: serde_json::Map<_, _> = harnesses.iter().map(|h| (h.binary().to_owned(), skill_binding_json(skill.value.binding(*h)))).collect();
-            serde_json::json!({"name":name, "default":skill.value.default, "layer":skill.path.to_string_lossy(), "description":skill.value.description, "bindings":bindings})
+            serde_json::json!({"name":name, "default":skill.value.default, "layer":ayran_core::config::layer_name(&skill.path), "description":skill.value.description, "bindings":bindings})
         }).collect();
         let mcp: Vec<_> = layers.mcp.iter().filter(|_| kind.is_none_or(|kind| kind == "mcp")).map(|(name, server)| {
             let bindings: serde_json::Map<_, _> = harnesses.iter().map(|h| (h.binary().to_owned(), mcp_binding_json(server.value.binding(*h)))).collect();
@@ -224,20 +226,24 @@ pub fn run(matches: &ArgMatches) -> i32 {
             .iter()
             .filter(|(_, alias)| {
                 kind.is_none_or(|k| k == "aliases")
-                    && selected.is_none_or(|h| h == alias.harness.binary())
+                    && selected.is_none_or(|h| Some(h) == alias.effective_harness(&layers).map(Harness::binary))
             })
             .map(|(name, alias)| {
                 serde_json::json!({
-                    "name":name, "harness":alias.harness.binary(), "description":alias.description
+                    "name":name, "harness":alias.effective_harness(&layers).map(Harness::binary), "description":alias.description
                 })
             })
             .collect();
+        let presets: Vec<_> = layers.presets.iter()
+            .filter(|(_, preset)| kind.is_none_or(|k| k == "presets") && selected.is_none_or(|h| h == preset.value.harness.binary()))
+            .map(|(name, preset)| serde_json::json!({"name":name, "harness":preset.value.harness, "model":preset.value.model, "effort":preset.value.effort, "description":preset.value.description, "layer":preset.path.to_string_lossy()})).collect();
         let mut output = json_envelope(&[]);
         output["plugins"] = serde_json::json!(plugins);
         output["skills"] = serde_json::json!(skills);
         output["mcp"] = serde_json::json!(mcp);
         output["profiles"] = serde_json::json!(profiles);
         output["aliases"] = serde_json::json!(aliases);
+        output["presets"] = serde_json::json!(presets);
         output["marketplaces"] = serde_json::json!(marketplace_rows);
         println!("{output}");
         return 0;
@@ -249,9 +255,9 @@ pub fn run(matches: &ArgMatches) -> i32 {
         let mut header = vec!["name", "default", "layer", "description"];
         header.extend(harnesses.iter().map(|h| h.binary()));
         println!("{}", header.join("\t"));
-        for (name, plugin) in layers.plugins {
+        for (name, plugin) in &layers.plugins {
             let mut row = vec![
-                name,
+                name.clone(),
                 if plugin.value.default { "*" } else { "" }.to_owned(),
                 plugin.path.display().to_string(),
                 plugin.value.description.clone().unwrap_or_default(),
@@ -268,11 +274,11 @@ pub fn run(matches: &ArgMatches) -> i32 {
         let mut header = vec!["name", "default", "layer", "description"];
         header.extend(harnesses.iter().map(|h| h.binary()));
         println!("{}", header.join("\t"));
-        for (name, skill) in layers.skills {
+        for (name, skill) in &layers.skills {
             let mut row = vec![
-                name,
+                name.clone(),
                 if skill.value.default { "*" } else { "" }.to_owned(),
-                skill.path.display().to_string(),
+                ayran_core::config::layer_name(&skill.path).to_string(),
                 skill.value.description.clone().unwrap_or_default(),
             ];
             row.extend(
@@ -287,9 +293,9 @@ pub fn run(matches: &ArgMatches) -> i32 {
         let mut header = vec!["name", "default", "layer", "description"];
         header.extend(harnesses.iter().map(|h| h.binary()));
         println!("{}", header.join("\t"));
-        for (name, server) in layers.mcp {
+        for (name, server) in &layers.mcp {
             let mut row = vec![
-                name,
+                name.clone(),
                 if server.value.default { "*" } else { "" }.to_owned(),
                 server.path.display().to_string(),
                 server.value.description.clone().unwrap_or_default(),
@@ -304,7 +310,7 @@ pub fn run(matches: &ArgMatches) -> i32 {
     }
     if kind == Some("profiles") || (kind.is_none() && !layers.profiles.is_empty()) {
         println!("name\tdefault\tlayer\tdescription\tmembers");
-        for (name, profile) in layers.profiles {
+        for (name, profile) in &layers.profiles {
             let mut members = Vec::new();
             if !profile.value.plugins.is_empty() {
                 members.push(format!("plugins: {}", profile.value.plugins.join(", ")));
@@ -319,22 +325,46 @@ pub fn run(matches: &ArgMatches) -> i32 {
                 members.push(format!("profiles: {}", profile.value.profiles.join(", ")));
             }
             print_row(vec![
-                name,
+                name.clone(),
                 if profile.value.default { "*" } else { "" }.to_owned(),
                 profile.path.display().to_string(),
-                profile.value.description.unwrap_or_default(),
+                profile.value.description.clone().unwrap_or_default(),
                 members.join(" · "),
             ]);
         }
     }
+    if kind == Some("presets") || (kind.is_none() && !layers.presets.is_empty()) {
+        println!("name\tharness\tmodel\teffort\tdescription");
+        for (name, preset) in &layers.presets {
+            let preset = &preset.value;
+            if selected.is_none_or(|h| h == preset.harness.binary()) {
+                print_row(vec![
+                    name.clone(),
+                    preset.harness.binary().to_owned(),
+                    preset.model.clone().unwrap_or_default(),
+                    preset
+                        .effort
+                        .map(|e| e.as_str().to_owned())
+                        .unwrap_or_default(),
+                    preset.description.clone().unwrap_or_default(),
+                ]);
+            }
+        }
+    }
     if kind == Some("aliases") || (kind.is_none() && !layers.aliases.is_empty()) {
         println!("name\tharness\tdescription");
-        for (name, alias) in layers.aliases {
-            if selected.is_none_or(|h| h == alias.harness.binary()) {
+        for (name, alias) in &layers.aliases {
+            if selected
+                .is_none_or(|h| Some(h) == alias.effective_harness(&layers).map(Harness::binary))
+            {
                 print_row(vec![
-                    name,
-                    alias.harness.binary().to_owned(),
-                    alias.description.unwrap_or_default(),
+                    name.clone(),
+                    alias
+                        .effective_harness(&layers)
+                        .map(Harness::binary)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    alias.description.clone().unwrap_or_default(),
                 ]);
             }
         }

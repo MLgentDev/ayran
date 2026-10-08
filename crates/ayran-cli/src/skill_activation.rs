@@ -22,6 +22,12 @@ pub fn read(
         let Some(skill) = layers.skills.get(logical) else {
             continue;
         };
+        if let Some(SkillBinding::Builtin(name)) = skill.value.binding(harness) {
+            state
+                .builtin
+                .insert(name.clone(), crate::builtin_skills::directory(name)?);
+            continue;
+        }
         let Some(SkillBinding::Path(path)) = skill.value.binding(harness) else {
             continue;
         };
@@ -41,11 +47,11 @@ pub fn read(
         let name = skill_name(path, &contents)?;
         state.names.insert(path.clone(), name);
     }
-    if !state.names.is_empty() {
+    if !state.names.is_empty() || !state.builtin.is_empty() {
         state.cache_root = crate::generated_cache::root().ok_or_else(|| {
             Diagnostic::error(
                 "config-invalid",
-                "cannot locate Skill cache without XDG_CACHE_HOME or HOME",
+                crate::generated_cache::missing_root_message("Skill"),
                 None,
             )
         })?;
@@ -110,6 +116,9 @@ pub(crate) fn skill_name(path: &Path, contents: &str) -> Result<String, Diagnost
 }
 
 pub fn materialize(cache: &GeneratedSkills) -> Result<(), Diagnostic> {
+    for target in cache.builtin.iter() {
+        crate::builtin_skills::materialize(target)?;
+    }
     crate::generated_cache::materialize(&cache.directory, |temporary| {
         let skills = if cache.harness == Harness::Copilot {
             let plugin = temporary.join("ayran");

@@ -17,6 +17,25 @@ ayran --version
 During development, you can use `cargo run -p ayran-cli -- --help` from this repository
 instead of an installed binary.
 
+The binary includes a manual-only `ayran` Skill. Select it without any config:
+
+```sh
+ayran --claude --skill ayran   # type /ayran inside the Session
+ayran --copilot --skill ayran  # type /ayran inside the Session
+```
+
+To load it by Default, redefine its whole table in your user configuration:
+
+```toml
+[skills.ayran]
+all = { builtin = "ayran" }
+default = true
+codex = false
+```
+
+Codex requires an installed snapshot; built-in snapshot installation is coming
+separately. `codex = false` keeps this Default from blocking Codex Sessions.
+
 ## 2. Set up the user configuration
 
 Find or edit the user layer with:
@@ -186,6 +205,21 @@ ayran list skills
 ayran list profiles
 ayran doctor --codex
 ```
+
+Refresh a registered marketplace or update an installed plugin by name:
+
+```sh
+ayran native marketplace update claude-plugins-official --codex --dry-run
+ayran native marketplace update claude-plugins-official --codex
+ayran native plugin update matt --codex
+```
+
+Use logical names from your configuration, or add a harness flag and `--id`
+for native names. Each command requires at least one name. Updates target
+user-level installs in the home used for launches and preserve plugin on/off
+state. Local marketplaces report unchanged. Codex plugin updates use the
+marketplace snapshot on disk; update its marketplace first to fetch new code.
+`--json` reports results and diagnostics, including any failed targets.
 
 ## 4. Activate shell aliases
 

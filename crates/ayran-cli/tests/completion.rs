@@ -290,7 +290,7 @@ foreach ($line in 'ayran --profile to', 'ayran --no-profile to') {
 }
 foreach ($name in 'cr', 'my-task') {
     $matches = @(Complete "$name ")
-    if (($matches.CompletionText -join ' ') -cne '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q') {
+    if (($matches.CompletionText -join ' ') -cne '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --preset --profile --quiet --skill --version -V -e -h -m -p -q') {
         throw "Alias flags: $name $($matches.CompletionText -join ' ')"
     }
     foreach ($match in $matches) { if (!$match.ToolTip) { throw "missing Alias description: $name" } }
@@ -599,7 +599,7 @@ for name in cr my-task; do
     COMP_WORDS=("$name" '' ignored)
     COMP_CWORD=1
     "$completion_function"
-    [[ ${COMPREPLY[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q' ]]
+    [[ ${COMPREPLY[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --preset --profile --quiet --skill --version -V -e -h -m -p -q' ]]
     expected=("${COMPREPLY[@]}")
     direct=()
     while IFS= read -r candidate; do direct+=("$candidate"); done < <(ayran __complete -- ayran --alias "$name" '')
@@ -821,7 +821,7 @@ for name in cr my-task; do
         actual+=("${candidate%%:*}")
         [[ ${candidate#*:} != '' ]]
     done
-    [[ ${actual[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --profile --quiet --skill --version -V -e -h -m -p -q' ]]
+    [[ ${actual[*]} == '--dry-run --effort --help --json --mcp --model --no-defaults --no-harness-args --no-mcp --no-plugin --no-profile --no-skill --plugin --preset --profile --quiet --skill --version -V -e -h -m -p -q' ]]
     words=("$name" --effort hi)
     CURRENT=3
     "${_comps[$name]}"
@@ -1628,7 +1628,7 @@ claude = 'new'
     );
     assert_completion(
         home.complete(&["ayran", "--claude", "--skill", ""]),
-        "absent\ncommon\nreplaced\n",
+        "absent\nayran\ncommon\nreplaced\n",
     );
     assert_completion(
         home.command()
@@ -1650,7 +1650,7 @@ claude = 'new'
         "config/ayran/ayran.toml",
         "[skills.unbound]\ndescription = 'No Binding yet'\n",
     );
-    assert_completion(home.complete(&["ayran", "--skill", ""]), "unbound\n");
+    assert_completion(home.complete(&["ayran", "--skill", ""]), "ayran\nunbound\n");
 }
 
 #[test]

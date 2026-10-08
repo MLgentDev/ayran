@@ -2928,3 +2928,490 @@ fn native_copilot_mcp_writes_to_the_isolated_launch_home() {
             .ends_with("/state/ayran/homes/copilot")
     );
 }
+
+#[test]
+fn native_update_dry_run_resolves_names_and_preflights_every_target() {
+    let w = Workspace::new();
+    w.codex();
+    w.write("user.toml", "[plugins.logical]\ncodex='review@m'\n");
+    let output = w.json(
+        &[
+            "native",
+            "plugin",
+            "update",
+            "logical",
+            "--codex",
+            "--dry-run",
+            "--json",
+        ],
+        0,
+    );
+    assert_eq!(output["changes"][0]["id"], "review@m");
+    assert_eq!(output["changes"][0]["outcome"], "planned");
+    assert!(
+        output["changes"][0]["commands"][0]
+            .as_str()
+            .unwrap()
+            .contains("codex plugin add 'review@m'")
+    );
+    let output = w.json(
+        &[
+            "native",
+            "plugin",
+            "update",
+            "logical",
+            "missing",
+            "--codex",
+            "--dry-run",
+            "--json",
+        ],
+        3,
+    );
+    assert_eq!(output["changes"], serde_json::json!([]));
+    assert_eq!(output["diagnostics"][0]["code"], "native-not-found");
+}
+
+impl Workspace {
+    fn update_writer(&self, harness: &str) {
+        self.write(harness, r#"#!/usr/bin/python3
+import json, os, pathlib, sys, tomllib, re
+args = sys.argv[1:]
+h = pathlib.Path(sys.argv[0]).name
+if args == ['--version']:
+    print({'claude':'2.1.288', 'codex':'0.158.0', 'copilot':'1.0.91'}[h])
+    sys.exit(0)
+root = pathlib.Path(os.environ['HOME'])
+home = pathlib.Path(os.environ[{'claude':'CLAUDE_CONFIG_DIR','codex':'CODEX_HOME','copilot':'COPILOT_HOME'}[h]])
+assert pathlib.Path.cwd() == home
+assert '-y' not in args and '--accept-command' not in args
+with (root / (h + '-updates.jsonl')).open('a') as log:
+    log.write(json.dumps(args) + '\n')
+id = args[3] if args[1] == 'marketplace' else args[2]
+if args[1] in ['enable', 'disable']:
+    assert args[2:5] == ['--scope', 'user', '--json']
+    id = args[5]
+    if args[1] == 'disable' and (root / 'restore-fail').exists():
+        print('disable refused', file=sys.stderr)
+        sys.exit(1)
+    path = home / 'settings.json'
+    settings = json.loads(path.read_text())
+    settings['enabledPlugins'][id] = args[1] == 'enable'
+    path.write_text(json.dumps(settings))
+    print('{"success":true}')
+    sys.exit(0)
+if h == 'claude' and args[1] == 'update':
+    assert args[3:] == ['--scope', 'user', '--json']
+    settings = json.loads((home / 'settings.json').read_text())
+    if (root / 'command-source').exists() and not settings['enabledPlugins'][id]:
+        print('progress line')
+        print('{"failureCode":"command_source_inactive"}')
+        sys.exit(1)
+if h == 'codex' and args[1] == 'add':
+    path = home / 'config.toml'
+    def enable(match):
+        header, body = match.groups()
+        if re.search(r'^enabled\s*=', body, re.M):
+            body = re.sub(r'^(enabled\s*=\s*)false', r'\g<1>true', body, flags=re.M)
+        else:
+            body += 'enabled=true\n'
+        return header + body
+    text = re.sub(r"(\[plugins\.'" + re.escape(id) + r"'\]\n)([^\[]*)", enable, path.read_text())
+    path.write_text(text)
+if (root / 'update-fail').exists() and id == 'review@m':
+    print('update refused', file=sys.stderr)
+    sys.exit(1)
+if args[1] == 'marketplace':
+    assert args[:3] == ['plugin', 'marketplace', 'upgrade' if h == 'codex' else 'update']
+    if h == 'codex':
+        path = home / 'config.toml'
+        path.write_text(path.read_text().replace("revision='old'", "revision='new'"))
+    else:
+        path = home / ('plugins/known_marketplaces.json' if h == 'claude' else 'settings.json')
+        value = json.loads(path.read_text())
+        markets = value if h == 'claude' else value['extraKnownMarketplaces']
+        markets[id]['revision'] = 'new'
+        path.write_text(json.dumps(value))
+else:
+    if h == 'claude':
+        print('progress line')
+        print('{"updateOutcome":"updated", "oldVersion":"1.0.0", "newVersion":"2.0.0"}')
+    elif h == 'codex':
+        assert args == ['plugin', 'add', id]
+        name, market = id.split('@')
+        path = home / 'plugins/cache' / market / name / '2.0.0'
+        path.mkdir(parents=True, exist_ok=True)
+        (path / 'plugin.json').write_text('{}')
+    else:
+        assert args == ['plugin', 'update', id]
+        print('Updated ' + id + ': v1.0.0 → v2.0.0')
+"#);
+    }
+    fn update_calls(&self, harness: &str) -> Vec<serde_json::Value> {
+        fs::read_to_string(self.0.path().join(format!("{harness}-updates.jsonl")))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+}
+
+#[test]
+fn native_update_claude_restores_off_state_even_when_update_fails() {
+    for fail in [false, true] {
+        let w = Workspace::new();
+        w.claude();
+        w.write(
+            ".claude/settings.json",
+            r#"{"enabledPlugins":{"review@m":false}}"#,
+        );
+        w.write("command-source", "");
+        if fail {
+            w.write("update-fail", "");
+        }
+        w.update_writer("claude");
+        let output = w.json(
+            &[
+                "native", "plugin", "update", "review@m", "--claude", "--id", "--json",
+            ],
+            if fail { 3 } else { 0 },
+        );
+        assert_eq!(
+            output["changes"][0]["outcome"],
+            if fail { "failed" } else { "changed" }
+        );
+        if !fail {
+            assert_eq!(output["changes"][0]["before"], "1.0.0");
+            assert_eq!(output["changes"][0]["after"], "2.0.0");
+        }
+        let listed = w.json(&["native", "plugin", "list", "--claude", "--json"], 0);
+        assert_eq!(listed["plugins"][0]["state"], "off");
+        assert_eq!(w.update_calls("claude").last().unwrap()[1], "disable");
+    }
+}
+
+#[test]
+fn native_update_failed_claude_restore_reports_recovery_and_failed_outcome() {
+    let w = Workspace::new();
+    w.claude();
+    w.write(
+        ".claude/settings.json",
+        r#"{"enabledPlugins":{"review@m":false}}"#,
+    );
+    w.write("command-source", "");
+    w.write("restore-fail", "");
+    w.update_writer("claude");
+    let output = w.json(
+        &[
+            "native", "plugin", "update", "review@m", "--claude", "--json",
+        ],
+        3,
+    );
+    assert_eq!(output["changes"][0]["outcome"], "failed");
+    assert!(output["diagnostics"].as_array().unwrap().iter().any(|d| {
+        d["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("ayran native plugin disable --claude --id"))
+    }));
+}
+
+#[test]
+fn native_update_codex_restores_state_and_runs_later_targets_after_failure() {
+    let w = Workspace::new();
+    w.codex();
+    w.write(".codex/config.toml", "# retain comment\n[plugins.'review@m']\nenabled=false\n[plugins.'later@m']\nenabled=true\n");
+    w.write(".codex/plugins/cache/m/later/1.0.0/plugin.json", "{}");
+    w.write("update-fail", "");
+    w.update_writer("codex");
+    let output = w.json(
+        &[
+            "native", "plugin", "update", "review@m", "later@m", "--codex", "--id", "--json",
+        ],
+        3,
+    );
+    assert_eq!(output["changes"][0]["outcome"], "failed");
+    assert_eq!(output["changes"][1]["outcome"], "changed");
+    assert_eq!(output["changes"][1]["before"], "1.0.0");
+    assert_eq!(output["changes"][1]["after"], "2.0.0");
+    assert!(
+        output["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("update refused")
+    );
+    let listed = w.json(&["native", "plugin", "list", "--codex", "--json"], 0);
+    assert_eq!(listed["plugins"][1]["id"], "review@m");
+    assert_eq!(listed["plugins"][1]["state"], "off");
+    assert!(
+        fs::read_to_string(w.0.path().join(".codex/config.toml"))
+            .unwrap()
+            .contains("# retain comment")
+    );
+}
+
+#[test]
+fn native_update_copilot_reads_versions_and_preserves_off_state() {
+    let w = Workspace::new();
+    w.copilot();
+    w.write(
+        ".copilot/settings.json",
+        r#"{"enabledPlugins":{"review@m":false}}"#,
+    );
+    w.update_writer("copilot");
+    let output = w.json(
+        &[
+            "native",
+            "plugin",
+            "update",
+            "review@m",
+            "--copilot",
+            "--json",
+        ],
+        0,
+    );
+    assert_eq!(output["changes"][0]["before"], "v1.0.0");
+    assert_eq!(output["changes"][0]["after"], "v2.0.0");
+    let listed = w.json(&["native", "plugin", "list", "--copilot", "--json"], 0);
+    assert_eq!(listed["plugins"][0]["state"], "off");
+}
+
+#[test]
+fn native_update_marketplaces_wrap_named_commands_and_skip_local_sources() {
+    let w = Workspace::new();
+    w.write(".claude/plugins/known_marketplaces.json", r#"{"m":{"source":{"source":"github","repo":"acme/plugins"},"revision":"old"},"local":{"source":{"source":"directory","path":"/tmp/local"}}}"#);
+    w.write(".copilot/settings.json", r#"{"extraKnownMarketplaces":{"m":{"source":{"source":"git","url":"https://example.test/m.git"},"revision":"old"},"local":{"source":{"source":"directory","path":"/tmp/local"}}}}"#);
+    w.write(".codex/config.toml", "[marketplaces.m]\nsource_type='git'\nsource='https://example.test/m.git'\nrevision='old'\n[marketplaces.local]\nsource_type='local'\nsource='/tmp/local'\n");
+    for h in ["claude", "codex", "copilot"] {
+        w.update_writer(h);
+        let flag = format!("--{h}");
+        let output = w.json(
+            &[
+                "native",
+                "marketplace",
+                "update",
+                "m",
+                "local",
+                &flag,
+                "--id",
+                "--json",
+            ],
+            0,
+        );
+        assert_eq!(output["changes"][0]["before"], "old");
+        assert_eq!(output["changes"][0]["after"], "new");
+        assert_eq!(output["changes"][1]["outcome"], "unchanged");
+        assert_eq!(w.update_calls(h).len(), 1);
+        assert_eq!(
+            w.update_calls(h)[0],
+            serde_json::json!([
+                "plugin",
+                "marketplace",
+                if h == "codex" { "upgrade" } else { "update" },
+                "m"
+            ])
+        );
+    }
+}
+
+#[test]
+fn native_update_completion_offers_user_installs_in_any_state_and_registered_markets() {
+    let w = Workspace::new();
+    w.codex();
+    w.write("user.toml", "[plugins.logical]\ncodex='review@m'\n[marketplaces.team]\ncodex={source='github:acme/plugins',name='m'}\n");
+    w.write(".codex/config.toml", "[plugins.'review@m']\nenabled=false\n[marketplaces.m]\nsource_type='git'\nsource='https://github.com/acme/plugins.git'\n");
+    let complete = |words: &[&str]| {
+        let mut args = vec!["__complete", "--", "ayran"];
+        args.extend(words);
+        String::from_utf8(w.run(&args).stdout).unwrap()
+    };
+    assert!(complete(&["native", "plugin", "update", "logical"]).contains("logical"));
+    assert!(complete(&["native", "plugin", "update", "--codex", "--id", "r"]).contains("review@m"));
+    assert_eq!(
+        complete(&["native", "plugin", "update", "--codex", "--id", "logical"]),
+        ""
+    );
+    assert!(complete(&["native", "marketplace", "update", "team"]).contains("team"));
+    assert!(complete(&["native", "marketplace", "update", "--codex", "--id", "m"]).contains("m"));
+    assert_eq!(
+        complete(&["native", "marketplace", "update", "--codex", "--id", "team"]),
+        ""
+    );
+    assert!(!w.0.path().join("codex-updates.jsonl").exists());
+}
+
+#[test]
+fn native_update_requires_names_and_a_harness_for_native_ids() {
+    let w = Workspace::new();
+    for kind in ["plugin", "marketplace"] {
+        assert_eq!(w.run(&["native", kind, "update"]).status.code(), Some(2));
+        let output = w.json(&["native", kind, "update", "native", "--id", "--json"], 2);
+        assert_eq!(output["changes"], serde_json::json!([]));
+    }
+}
+
+#[test]
+fn native_update_skips_project_only_plugins_and_keeps_dry_run_read_only() {
+    let w = Workspace::new();
+    w.write(".claude/plugins/installed_plugins.json", &serde_json::json!({"version":2,"plugins":{"review@m":[{"scope":"project","projectPath":w.0.path(),"installPath":"unused"}]}}).to_string());
+    let output = w.json(
+        &[
+            "native", "plugin", "update", "review@m", "--claude", "--json",
+        ],
+        0,
+    );
+    assert_eq!(output["changes"], serde_json::json!([]));
+    assert_eq!(output["diagnostics"][0]["code"], "native-binding-skipped");
+    w.claude();
+    w.write(
+        ".claude/settings.json",
+        r#"{"enabledPlugins":{"review@m":false}}"#,
+    );
+    w.update_writer("claude");
+    let output = w.json(
+        &[
+            "native",
+            "plugin",
+            "update",
+            "review@m",
+            "--claude",
+            "--dry-run",
+            "--json",
+        ],
+        0,
+    );
+    let commands = output["changes"][0]["commands"].to_string();
+    assert!(commands.contains("enable"));
+    assert!(commands.contains("disable"));
+    assert!(w.update_calls("claude").is_empty());
+    let output = w.json(
+        &[
+            "native", "plugin", "update", "review@m", "missing", "--claude", "--json",
+        ],
+        3,
+    );
+    assert_eq!(output["changes"], serde_json::json!([]));
+    assert!(w.update_calls("claude").is_empty());
+}
+
+#[test]
+fn native_update_uses_isolated_launch_home_without_trust() {
+    let w = Workspace::new();
+    w.codex();
+    w.write("user.toml", "[harnesses.codex]\nhome='isolated'\n");
+    w.write("ayran.toml", "[plugins.logical]\ncodex='review@m'\n");
+    w.write(
+        "state/ayran/homes/codex/config.toml",
+        "[plugins.'review@m']\nenabled=false\n",
+    );
+    w.write(
+        "state/ayran/homes/codex/plugins/cache/m/review/1.0.0/plugin.json",
+        "{}",
+    );
+    w.update_writer("codex");
+    let output = w.json(
+        &["native", "plugin", "update", "logical", "--codex", "--json"],
+        0,
+    );
+    assert_eq!(output["changes"][0]["after"], "2.0.0");
+    let listed = w.json(&["native", "plugin", "list", "--codex", "--json"], 0);
+    assert_eq!(listed["plugins"][0]["state"], "off");
+    assert_eq!(
+        fs::read_to_string(w.0.path().join(".codex/config.toml")).unwrap(),
+        "[plugins.'review@m']\nenabled=true\n"
+    );
+}
+
+#[test]
+fn native_update_marketplace_reports_checkout_revision_without_timestamps() {
+    let w = Workspace::new();
+    w.write(
+        ".codex/config.toml",
+        "[marketplaces.m]\nsource_type='git'\nsource='https://example.test/m.git'\n",
+    );
+    w.write(
+        ".codex/.tmp/marketplaces/m/.git/HEAD",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    );
+    w.write(
+        "codex",
+        r#"#!/usr/bin/python3
+import os, pathlib, sys
+if sys.argv[1:] == ['--version']:
+    print('0.158.0')
+    sys.exit(0)
+assert sys.argv[1:] == ['plugin', 'marketplace', 'upgrade', 'm']
+home = pathlib.Path(os.environ['CODEX_HOME'])
+(home / '.tmp/marketplaces/m/.git/HEAD').write_text('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n')
+"#,
+    );
+    let output = w.json(
+        &["native", "marketplace", "update", "m", "--codex", "--json"],
+        0,
+    );
+    assert_eq!(
+        output["changes"][0]["before"],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        output["changes"][0]["after"],
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+}
+
+#[test]
+fn native_update_codex_preserves_omitted_enabled_value() {
+    let w = Workspace::new();
+    w.codex();
+    w.write(
+        ".codex/config.toml",
+        "[plugins.'review@m']\ncustom='keep'\n",
+    );
+    w.update_writer("codex");
+    let output = w.json(
+        &[
+            "native", "plugin", "update", "review@m", "--codex", "--json",
+        ],
+        0,
+    );
+    assert_eq!(output["changes"][0]["outcome"], "changed");
+    let config = fs::read_to_string(w.0.path().join(".codex/config.toml")).unwrap();
+    assert!(!config.contains("enabled"));
+    assert!(config.contains("custom='keep'"));
+}
+
+#[test]
+fn native_update_rejects_stale_copilot_toggles_before_every_update() {
+    let w = Workspace::new();
+    w.copilot();
+    w.update_writer("copilot");
+    w.write(
+        ".copilot/settings.json",
+        r#"{"enabledPlugins":{"review@m":true,"ghost@m":false}}"#,
+    );
+    let output = w.json(
+        &[
+            "native",
+            "plugin",
+            "update",
+            "review@m",
+            "ghost@m",
+            "--copilot",
+            "--json",
+        ],
+        3,
+    );
+    assert_eq!(output["changes"], serde_json::json!([]));
+    assert_eq!(output["diagnostics"][0]["code"], "native-not-found");
+    assert!(w.update_calls("copilot").is_empty());
+    let output = w.run(&[
+        "__complete",
+        "--",
+        "ayran",
+        "native",
+        "plugin",
+        "update",
+        "--copilot",
+        "--id",
+        "ghost",
+    ]);
+    assert!(output.stdout.is_empty());
+}

@@ -11,6 +11,8 @@ pub struct GeneratedSkills {
     pub harness: Harness,
     pub directory: PathBuf,
     pub targets: BTreeMap<String, PathBuf>,
+    /// Embedded source trees to publish before linking the Session directory.
+    pub builtin: Vec<PathBuf>,
 }
 
 impl GeneratedSkills {
@@ -33,6 +35,7 @@ impl GeneratedSkills {
             harness,
             directory,
             targets,
+            builtin: Vec::new(),
         }
     }
 }

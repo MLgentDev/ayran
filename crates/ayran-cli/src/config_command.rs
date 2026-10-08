@@ -11,6 +11,7 @@ use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command, builder::OsStringValue
 
 #[derive(Clone, Copy, PartialEq)]
 enum Scope {
+    Builtin,
     User,
     Project,
     Local,
@@ -18,6 +19,7 @@ enum Scope {
 impl Scope {
     fn name(self) -> &'static str {
         match self {
+            Self::Builtin => "built-in",
             Self::User => "user",
             Self::Project => "project",
             Self::Local => "local",
@@ -140,6 +142,7 @@ impl Paths {
     }
     fn get(&self, scope: Scope) -> &Path {
         match scope {
+            Scope::Builtin => unreachable!("Built-in layer has no editable file"),
             Scope::User => &self.user,
             Scope::Project => &self.project,
             Scope::Local => &self.local,
@@ -239,12 +242,22 @@ fn list(user: &Path, json: bool) -> Result<i32, Diagnostic> {
             path,
         })
         .collect();
+    let mut rows = rows;
+    rows.insert(
+        0,
+        LayerRow {
+            scope: Scope::Builtin,
+            path: PathBuf::new(),
+            exists: true,
+            valid: true,
+        },
+    );
     if json {
         let output: Vec<_> = rows
             .iter()
             .map(|row| {
                 serde_json::json!({
-                    "scope": row.scope.name(), "path": row.path.to_string_lossy(),
+                    "scope": row.scope.name(), "path": (row.scope != Scope::Builtin).then(|| row.path.to_string_lossy()),
                     "exists": row.exists, "valid": row.valid,
                 })
             })
@@ -291,8 +304,9 @@ fn same_path(left: &Path, right: &Path) -> Result<bool, Diagnostic> {
 
 fn template(scope: Scope) -> &'static str {
     match scope {
+        Scope::Builtin => unreachable!("Built-in layer has no editable file"),
         Scope::User => {
-            "# User layer: settings for every directory.\n# default_harness = \"codex\"\n#\n# [harnesses.codex]\n# model = \"gpt-5\"\n# effort = \"high\"\n# home = \"isolated\"\n#\n# [harnesses.copilot]\n# args = [\"--no-experimental\", \"--allow-all\"]\n#\n# [aliases.work]\n# harness = \"codex\"\n# model = \"gpt-5\"\n# effort = \"high\"\n# description = \"My coding session\"\n#\n# Re-evaluate ayran activate after adding or removing Aliases.\n"
+            "# User layer: settings for every directory.\n# default_harness = \"codex\"\n#\n# [harnesses.codex]\n# model = \"gpt-5\"\n# effort = \"high\"\n# home = \"isolated\"\n#\n# [harnesses.copilot]\n# args = [\"--no-experimental\", \"--allow-all\"]\n#\n# [presets.sol]\n# harness = \"codex\"\n# model = \"gpt-6-sol\"\n# effort = \"high\"\n#\n# [aliases.work]\n# preset = \"sol\"\n# description = \"My coding session\"\n#\n# Re-evaluate ayran activate after adding or removing Aliases.\n"
         }
         Scope::Project => {
             "# Project layer: shared settings for this directory.\n# default_harness = \"codex\"\n#\n# [harnesses.codex]\n# model = \"gpt-5\"\n# effort = \"high\"\n#\n# [harnesses.claude]\n# model = \"sonnet\"\n# effort = \"high\"\n#\n# [harnesses.copilot]\n# effort = \"medium\"\n#\n# Nearer Config layers override these settings.\n"

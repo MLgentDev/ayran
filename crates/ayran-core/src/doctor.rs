@@ -144,7 +144,11 @@ fn session_selections(
         defaults(layers, None, &mut result);
         sessions.push(result);
     }
-    for alias in layers.aliases.values().filter(|a| a.harness == harness) {
+    for alias in layers
+        .aliases
+        .values()
+        .filter(|a| a.effective_harness(layers) == Some(harness))
+    {
         let mut selected = Reachable::default();
         if alias.defaults {
             defaults(layers, Some(alias), &mut selected);
@@ -253,6 +257,16 @@ pub fn audit(layers: &ConfigLayers, state: &DoctorState) -> Vec<Diagnostic> {
                 item: Some(Box::new(path.to_string_lossy().into_owned())),
                 ..Default::default()
             });
+        }
+    }
+    for name in layers.aliases.keys() {
+        if let Err(errors) = (crate::resolve::Request {
+            alias: Some(name.clone()),
+            ..Default::default()
+        })
+        .resolve_harness(layers)
+        {
+            diagnostics.extend(errors.into_iter().filter(|d| d.code != "no-harness"));
         }
     }
     check_harness_args(layers, &mut diagnostics);
@@ -554,6 +568,10 @@ fn check_bindings(
     let sessions = session_selections(layers, state, harness);
     let mut names: BTreeMap<String, Vec<(&str, bool)>> = BTreeMap::new();
     for (logical, skill) in &layers.skills {
+        if skill.path.as_os_str().is_empty() && !reachable.contains(CapabilityKind::Skill, logical)
+        {
+            continue;
+        }
         let resolved = match skill.value.binding(harness) {
             Some(SkillBinding::Path(path)) => {
                 diagnostics.extend(check_path(
@@ -569,6 +587,26 @@ fn check_bindings(
                     None
                 } else {
                     state.skill_names.get(path).map(|n| (n.clone(), false))
+                }
+            }
+            Some(SkillBinding::Builtin(name)) => {
+                if harness == Harness::Codex {
+                    let mut d = gap(
+                        "unsupported-binding",
+                        format!(
+                            "Codex cannot load built-in Skill {logical} without an installed snapshot"
+                        ),
+                        CapabilityKind::Skill,
+                        logical,
+                        &skill.path,
+                        harness,
+                        reachable,
+                    );
+                    d.hint = Some(format!("ayran install --skill {logical} --codex"));
+                    diagnostics.push(d);
+                    None
+                } else {
+                    Some((name.clone(), false))
                 }
             }
             Some(SkillBinding::Git(binding)) => {
@@ -858,8 +896,19 @@ fn check_harness_args(layers: &ConfigLayers, diagnostics: &mut Vec<Diagnostic>) 
             ));
         }
         for (name, alias) in &layers.aliases {
-            if alias.harness == harness {
-                sources.push((&alias.args, format!("Alias {name}"), None));
+            if alias.effective_harness(layers) == Some(harness)
+                && let Some(args) = &alias.args
+            {
+                sources.push((args, format!("Alias {name}"), None));
+            }
+        }
+        for (name, preset) in &layers.presets {
+            if preset.value.harness == harness {
+                sources.push((
+                    &preset.value.args,
+                    format!("Preset {name}"),
+                    Some(preset.path.display().to_string()),
+                ));
             }
         }
         for (args, source, layer) in sources {

@@ -4389,9 +4389,9 @@ fn alias_errors_have_their_own_diagnostic_codes() {
 
     for (contents, code, message) in [
         (
-            "[aliases.cr]\nmodel = 'opus'\n",
+            "[aliases.cr]\npreset = 42\n",
             "config-invalid",
-            "harness is required",
+            "preset must be a string",
         ),
         (
             "[aliases.cr]\nharness = 'wrong'\n",
@@ -5802,7 +5802,9 @@ fn unknown_profiles_fail_but_empty_profiles_are_silent() {
     ]);
     assert!(output.status.success(), "{output:?}");
     assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("ayran:"),
+        !String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line.starts_with("ayran:")),
         "{output:?}"
     );
     let output = home.run(&["--copilot", "--profile", "nope"]);
@@ -9279,4 +9281,488 @@ fn copilot_mcp_selected_server_enables_only_when_user_or_repo_settings_disable_i
             );
         }
     }
+}
+
+#[test]
+fn command_line_preset_replaces_alias_run_settings() {
+    let home = TestHome::new();
+    home.config("[presets.luna]\nharness = 'codex'\nmodel = 'gpt-6-luna'\neffort = 'high'\nargs = ['--preset-arg']\nharness_args = false\n[aliases.matt]\nharness = 'claude'\nmodel = 'opus'\nargs = ['--alias-arg']\n[profiles.matt]\n[aliases.matt.disable]\nplugins = []\n");
+    let output = home.run(&["--alias", "matt", "--preset", "luna", "--dry-run", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let argv = plan["argv"].as_array().unwrap();
+    assert!(argv.iter().any(|arg| arg == "gpt-6-luna"));
+    assert!(argv.iter().any(|arg| arg == "--preset-arg"));
+    assert!(!argv.iter().any(|arg| arg == "--alias-arg" || arg == "opus"));
+    let shorthand = home.run(&["--alias", "matt", "--luna", "--dry-run", "--json"]);
+    assert!(shorthand.status.success(), "{shorthand:?}");
+}
+
+#[test]
+fn preset_resume_reresolves_names_and_rejects_harness_changes() {
+    let home = TestHome::new();
+    home.config("[presets.opus]\nharness = 'claude'\nmodel = 'opus-old'\n");
+    let launch = home.run(&["--opus"]);
+    assert!(launch.status.success(), "{launch:?}");
+    let record_path = home.session_path();
+    let before = fs::read(&record_path).unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(record["request"]["preset"], "opus");
+    home.config("[presets.opus]\nharness = 'claude'\nmodel = 'opus-new'\n");
+    let resumed = home.run(&["resume", "--last", "--dry-run", "--json"]);
+    assert!(resumed.status.success(), "{resumed:?}");
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("opus-new"));
+    assert_eq!(fs::read(&record_path).unwrap(), before);
+    let listed = home.run(&["list", "sessions"]);
+    assert!(String::from_utf8_lossy(&listed.stdout).contains("--preset opus"));
+    home.config("[presets.opus]\nharness = 'codex'\n");
+    let changed = home.run(&["resume", "--last", "--dry-run"]);
+    assert_eq!(changed.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("preset-harness-changed"));
+    let conflicting = home.run(&["resume", "--last", "--opus", "--dry-run"]);
+    assert_eq!(conflicting.status.code(), Some(2));
+    home.config("");
+    let deleted = home.run(&["resume", "--last", "--dry-run"]);
+    assert_eq!(deleted.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&deleted.stderr).contains("unknown-preset"));
+    assert_eq!(fs::read(&record_path).unwrap(), before);
+}
+
+#[test]
+fn alias_missing_preset_is_reported_on_resume() {
+    let home = TestHome::new();
+    home.config("[presets.opus]\nharness = 'claude'\n[aliases.matt]\npreset = 'opus'\n");
+    assert!(home.run(&["--alias", "matt"]).status.success());
+    home.config("[aliases.matt]\npreset = 'opus'\n");
+    let output = home.run(&["resume", "--last", "--dry-run"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown-preset"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn alias_inherits_preset_and_inline_fields_override_it() {
+    let home = TestHome::new();
+    home.config("[harnesses.claude]\nargs = ['--harness-arg']\n[presets.opus]\nharness = 'claude'\nmodel = 'opus'\neffort = 'medium'\nargs = ['--preset-arg']\nharness_args = false\n[aliases.matt]\npreset = 'opus'\nprofiles = ['coding']\ndefaults = false\n[profiles.coding]\nplugins = ['optional']\n[plugins.optional]\nall = false\n");
+    let inherited = home.run(&["--alias", "matt", "--dry-run"]);
+    assert!(inherited.status.success(), "{inherited:?}");
+    let trace = String::from_utf8_lossy(&inherited.stderr);
+    for expected in [
+        "claude (Preset opus from Alias matt)",
+        "opus (Preset opus from Alias matt)",
+        "medium (Preset opus from Alias matt)",
+        "Harness arg: --preset-arg (Preset opus from Alias matt)",
+        "Profile coding",
+    ] {
+        assert!(trace.contains(expected), "missing {expected}: {trace}");
+    }
+    assert!(!String::from_utf8_lossy(&inherited.stdout).contains("--harness-arg"));
+    home.config("[harnesses.claude]\nargs = ['--harness-arg']\n[presets.opus]\nharness = 'claude'\nmodel = 'opus'\neffort = 'medium'\nargs = ['--preset-arg']\nharness_args = false\n[aliases.matt]\npreset = 'opus'\nmodel = 'sonnet'\neffort = 'high'\nargs = []\nharness_args = true\n");
+    let inline = home.run(&["--alias", "matt", "--dry-run"]);
+    assert!(inline.status.success(), "{inline:?}");
+    let trace = String::from_utf8_lossy(&inline.stderr);
+    assert!(trace.contains("sonnet (Alias matt)"), "{trace}");
+    assert!(trace.contains("high (Alias matt)"), "{trace}");
+    let argv = String::from_utf8_lossy(&inline.stdout);
+    assert!(argv.contains("--harness-arg"));
+    assert!(!argv.contains("--preset-arg"));
+    let flags = home.run(&[
+        "--alias",
+        "matt",
+        "--opus",
+        "-m",
+        "haiku",
+        "-e",
+        "low",
+        "--dry-run",
+    ]);
+    assert!(flags.status.success(), "{flags:?}");
+    let trace = String::from_utf8_lossy(&flags.stderr);
+    assert!(trace.contains("haiku (flag)"));
+    assert!(trace.contains("low (flag)"));
+}
+
+#[test]
+fn presets_validate_names_fields_and_user_layer_scope() {
+    let home = TestHome::new();
+    for (config, code) in [
+        ("[presets.'bad.name']\nharness = 'claude'", "invalid-name"),
+        (
+            "[presets.quiet]\nharness = 'claude'",
+            "preset-reserved-name",
+        ),
+        (
+            "[presets.codex]\nharness = 'claude'",
+            "preset-reserved-name",
+        ),
+        ("[presets.fork]\nharness = 'claude'", "preset-reserved-name"),
+        ("[presets.opus]\nmodel = 'opus'", "config-invalid"),
+        (
+            "[presets.opus]\nharness = 'claude'\neffort = 'ultra'",
+            "config-invalid",
+        ),
+        (
+            "[presets.opus]\nharness = 'claude'\nplugins = []",
+            "config-invalid",
+        ),
+        (
+            "[presets.opus]\nharness = 'claude'\nargs = ['--']",
+            "config-invalid",
+        ),
+        (
+            "[presets.opus]\nharness = 'claude'\n[aliases.work]\npreset = 'opus'\nharness = 'codex'",
+            "config-invalid",
+        ),
+    ] {
+        home.config(config);
+        let output = home.run(&["--claude", "--dry-run"]);
+        assert_eq!(output.status.code(), Some(3), "{config}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(code),
+            "{config}: {output:?}"
+        );
+    }
+    home.config("");
+    for file in ["ayran.toml", "ayran.local.toml"] {
+        let path = home.dir.path().join(file);
+        fs::write(&path, "[presets.opus]\nharness = 'claude'\n").unwrap();
+        let output = home.run(&["--claude", "--dry-run"]);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("user-level-only"));
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn preset_usage_errors_and_unknown_names_have_distinct_exit_codes() {
+    let home = TestHome::new();
+    home.config("default_harness = 'claude'\n[presets.opus]\nharness = 'claude'\n[presets.luna]\nharness = 'codex'\n[aliases.work]\n");
+    for args in [
+        vec!["--preset", "opus", "--preset", "luna", "--dry-run"],
+        vec!["--opus", "--luna", "--dry-run"],
+        vec!["--opus", "--opus", "--dry-run"],
+        vec!["--preset", "opus", "--opus", "--dry-run"],
+        vec!["--codex", "--opus", "--dry-run"],
+    ] {
+        let output = home.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+    }
+    for args in [
+        vec!["--preset", "gone", "--dry-run"],
+        vec!["--alias", "missing", "--dry-run"],
+    ] {
+        assert_eq!(home.run(&args).status.code(), Some(3));
+    }
+    let fallback = home.run(&["--alias", "work", "--dry-run", "--json"]);
+    assert!(fallback.status.success(), "{fallback:?}");
+    let explicit = home.run(&["--alias", "work", "--codex", "--dry-run", "--json"]);
+    assert!(explicit.status.success(), "{explicit:?}");
+}
+
+#[test]
+fn presets_list_and_complete_on_launch_alias_and_resume() {
+    let home = TestHome::new();
+    home.config("[presets.opus]\nharness = 'claude'\nmodel = 'opus'\neffort = 'medium'\ndescription = 'Claude coding'\nargs = ['secret-arg']\n[presets.luna]\nharness = 'codex'\nmodel = 'gpt-6-luna'\n[aliases.matt]\npreset = 'opus'\n");
+    let listed = home.run(&["list", "presets", "--json", "--harness", "codex"]);
+    assert!(listed.status.success(), "{listed:?}");
+    let rows: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(rows["presets"].as_array().unwrap().len(), 1);
+    assert_eq!(rows["presets"][0]["name"], "luna");
+    assert!(!String::from_utf8_lossy(&listed.stdout).contains("secret-arg"));
+    let all = home.run(&["list", "--json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
+    assert_eq!(rows["presets"].as_array().unwrap().len(), 2);
+    assert_eq!(rows["aliases"][0]["harness"], "claude");
+    assert!(
+        String::from_utf8_lossy(&home.run(&["list", "presets"]).stdout).contains("Claude coding")
+    );
+    for args in [
+        vec!["__complete", "--", "ayran", "--preset", ""],
+        vec![
+            "__complete",
+            "--",
+            "ayran",
+            "--alias",
+            "matt",
+            "--preset",
+            "",
+        ],
+        vec![
+            "__complete",
+            "--",
+            "ayran",
+            "resume",
+            "--last",
+            "--preset",
+            "",
+        ],
+    ] {
+        let output = home.run(&args);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "luna\nopus\n",
+            "{args:?}: {output:?}"
+        );
+    }
+    let filtered = home.run(&["__complete", "--", "ayran", "--codex", "--preset", ""]);
+    assert_eq!(String::from_utf8_lossy(&filtered.stdout), "luna\n");
+    let shorthand = home.run(&["__complete", "--", "ayran", "--alias", "matt", "--l"]);
+    assert_eq!(String::from_utf8_lossy(&shorthand.stdout), "--luna\n");
+    let models = home.run(&[
+        "__complete",
+        "--",
+        "ayran",
+        "--alias",
+        "matt",
+        "--luna",
+        "-m",
+        "gpt-6",
+    ]);
+    assert_eq!(String::from_utf8_lossy(&models.stdout), "gpt-6-luna\n");
+    let filtered = home.run(&["__complete", "--", "ayran", "--codex", "--o"]);
+    assert!(filtered.stdout.is_empty());
+}
+
+#[test]
+fn doctor_reports_undefined_alias_presets_and_overlapping_preset_args() {
+    let home = TestHome::new();
+    home.config("[aliases.work]\npreset = 'gone'\n[presets.opus]\nharness = 'claude'\nargs = ['--model', 'opus']\n");
+    let output = home.run(&["doctor", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostics = report["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().any(|d| d["code"] == "unknown-preset"),
+        "{output:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d["code"] == "harness-args-overlap"
+                && d["message"].as_str().unwrap().contains("Preset opus")),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn switching_preset_keeps_alias_capabilities_disables_and_defaults() {
+    let home = TestHome::new();
+    home.config("[harnesses.codex]\nmodel = 'harness-model'\neffort = 'low'\nargs = ['--harness-arg']\n[presets.luna]\nharness = 'codex'\nargs = ['--preset-arg']\n[aliases.matt]\nharness = 'claude'\nmodel = 'alias-model'\neffort = 'high'\nargs = ['--alias-arg']\nharness_args = false\nprofiles = ['coding']\ndefaults = false\ndisable = { profiles = ['blocked'] }\n[profiles.coding]\nplugins = ['selected']\nprofiles = ['blocked']\n[profiles.blocked]\nplugins = ['undefined']\n[plugins.selected]\nall = false\n[plugins.unwanted]\ndefault = true\nall = false\n");
+    let output = home.run(&[
+        "--alias",
+        "matt",
+        "--luna",
+        "--dry-run",
+        "--",
+        "--typed-arg",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let trace = String::from_utf8_lossy(&output.stderr);
+    for expected in [
+        "harness-model",
+        "low",
+        "via Profile coding",
+        "Profile blocked: disabled by Alias matt",
+        "defaults = false",
+        "Preset luna from command line",
+    ] {
+        assert!(trace.contains(expected), "missing {expected}: {trace}");
+    }
+    let argv = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        argv.contains("--harness-arg --preset-arg --typed-arg"),
+        "{argv}"
+    );
+    assert!(!argv.contains("alias-model") && !argv.contains("--alias-arg"));
+    let suppressed = home.run(&[
+        "--alias",
+        "matt",
+        "--luna",
+        "--no-harness-args",
+        "--dry-run",
+        "--",
+        "--typed-arg",
+    ]);
+    assert!(suppressed.status.success(), "{suppressed:?}");
+    let argv = String::from_utf8_lossy(&suppressed.stdout);
+    assert!(!argv.contains("--harness-arg") && !argv.contains("--preset-arg"));
+    assert!(argv.contains("--typed-arg"));
+}
+
+#[test]
+fn resume_replacement_preset_is_persisted_and_can_repair_a_deleted_choice() {
+    let home = TestHome::new();
+    home.config("[presets.opus]\nharness = 'claude'\nmodel = 'opus'\n");
+    assert!(home.run(&["--opus"]).status.success());
+    home.config("[presets.fast]\nharness = 'claude'\nmodel = 'haiku'\n");
+    let dry = home.run(&["resume", "--last", "--preset", "fast", "--dry-run"]);
+    assert!(dry.status.success(), "{dry:?}");
+    let resumed = home.run(&["resume", "--last", "--fast"]);
+    assert!(resumed.status.success(), "{resumed:?}");
+    let listed = home.run(&["list", "sessions", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed["sessions"][0]["request"]["preset"], "fast");
+    assert!(home.raw_record().contains("haiku"));
+}
+
+#[test]
+fn presets_cannot_collide_with_any_documented_launch_or_resume_flag() {
+    let home = TestHome::new();
+    let mut names = std::collections::BTreeSet::new();
+    for args in [vec!["--help"], vec!["resume", "--help"]] {
+        let help = home.run(&args);
+        assert!(help.status.success(), "{help:?}");
+        for word in String::from_utf8_lossy(&help.stdout).split_whitespace() {
+            if let Some(name) = word.strip_prefix("--") {
+                let name = name.trim_end_matches(',');
+                if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    names.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    assert!(names.contains("preset") && names.contains("native") && names.contains("quiet"));
+    for name in names {
+        home.config(&format!("[presets.{name}]\nharness = 'claude'\n"));
+        let output = home.run(&["--claude", "--dry-run"]);
+        assert_eq!(output.status.code(), Some(3), "{name}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("preset-reserved-name"),
+            "{name}: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn invalid_preset_config_keeps_its_diagnostic_when_using_shorthand() {
+    let home = TestHome::new();
+    home.config("[presets.opus]\nharness = 'claude'\neffort = 'ultra'\n");
+    let output = home.run(&["--opus", "--dry-run"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("config-invalid"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn invalid_preset_config_does_not_change_unrelated_usage_errors() {
+    let home = TestHome::new();
+    home.config("[presets.opus]\nharness = 'claude'\neffort = 'ultra'\n");
+    let output = home.run(&["--bogus"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("error[usage]"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn builtin_skill_dry_run_materialization_and_resume_use_embedded_tree() {
+    for harness in ["--claude", "--copilot"] {
+        let home = TestHome::new();
+        let before = snapshot(home.dir.path());
+        let dry = home.run(&[harness, "--skill", "ayran", "--dry-run"]);
+        assert!(dry.status.success(), "{dry:?}");
+        let trace = String::from_utf8_lossy(&dry.stderr);
+        assert!(trace.contains("builtin ayran, built-in"), "{trace}");
+        assert!(trace.contains("not created yet"), "{trace}");
+        assert_eq!(snapshot(home.dir.path()), before);
+        let launch = home.run(&[harness, "--skill", "ayran"]);
+        assert!(launch.status.success(), "{launch:?}");
+        let root = home.dir.path().join("cache/ayran/builtin-skills");
+        let source = fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(
+            fs::read(source.join("SKILL.md")).unwrap(),
+            fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.agents/skills/ayran/SKILL.md")
+            )
+            .unwrap()
+        );
+        let generated = home.dir.path().join("cache/ayran").join(&harness[2..]);
+        let directory = fs::read_dir(generated)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let link = directory.join(if harness == "--claude" {
+            ".claude/skills/ayran"
+        } else {
+            "ayran/skills/ayran"
+        });
+        assert_eq!(link.canonicalize().unwrap(), source.canonicalize().unwrap());
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.session_path()).unwrap()).unwrap();
+        assert_eq!(record["request"]["skills"], serde_json::json!(["ayran"]));
+        let resume = home.run(&["resume", "--last", "--dry-run"]);
+        assert!(resume.status.success(), "{resume:?}");
+        assert!(String::from_utf8_lossy(&resume.stderr).contains("builtin ayran, built-in"));
+        assert!(home.run(&[harness, "--skill", "ayran"]).status.success());
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn builtin_skill_codex_hint_and_whole_table_redefinition() {
+    let home = TestHome::new();
+    let output = home.run(&["--codex", "--skill", "ayran", "--dry-run"]);
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        errors.contains("unsupported-binding")
+            && errors.contains("ayran install --skill ayran --codex"),
+        "{errors}"
+    );
+    home.config("[skills.ayran]\nclaude = false\n");
+    let output = home.run(&["--copilot", "--skill", "ayran", "--dry-run"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("missing-binding"));
+    home.config("[skills.ayran]\nall = { builtin = 'ayran' }\ndefault = true\ncodex = false\n");
+    let output = home.run(&["--claude", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Default"));
+    let output = home.run(&["--claude", "--no-skill", "ayran", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("--add-dir"));
+}
+
+#[test]
+fn path_skill_in_builtin_named_parent_keeps_its_own_contents() {
+    let home = TestHome::new();
+    let source = home.dir.path().join("config/ayran/builtin-skills/custom");
+    fs::create_dir_all(&source).unwrap();
+    let text = "---\nname: custom\ndescription: Custom skill\n---\n";
+    fs::write(source.join("SKILL.md"), text).unwrap();
+    let old = filetime::FileTime::from_unix_time(1000, 0);
+    filetime::set_file_mtime(&source, old).unwrap();
+    home.config("[skills.custom]\nall = { path = 'builtin-skills/custom' }\n");
+    let output = home.run(&["--claude", "--skill", "custom"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), text);
+    // Path activation must not touch its source tree's last-use time either.
+    assert_eq!(
+        filetime::FileTime::from_last_modification_time(&fs::metadata(&source).unwrap()),
+        old
+    );
+}
+
+#[test]
+fn builtin_skill_works_through_profiles_aliases_and_other_logical_names() {
+    let home = TestHome::new();
+    home.config("[skills.manual]\nclaude = { builtin = 'ayran' }\n[profiles.help]\nskills = ['manual']\n[aliases.help]\nharness = 'claude'\nprofiles = ['help']\n");
+    for args in [
+        vec!["--claude", "--skill", "manual", "--dry-run"],
+        vec!["--claude", "--profile", "help", "--dry-run"],
+        vec!["--alias", "help", "--dry-run"],
+    ] {
+        let output = home.run(&args);
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("builtin ayran"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("--add-dir"));
+    }
+    let output = home.run(&["--alias", "help", "--no-skill", "manual", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("--add-dir"));
 }

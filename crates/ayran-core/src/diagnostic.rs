@@ -69,7 +69,7 @@ impl Diagnostic {
             kind,
             name: name.into(),
         }));
-        self.layer = Some(layer.display().to_string());
+        self.layer = Some(crate::config::layer_name(layer).into_owned());
         self
     }
 }

@@ -10,7 +10,10 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 pub fn command() -> Command {
     let toggles = |kind, about| {
         let mut command = Command::new(kind).about(about).subcommand_required(true);
-        for action in ["list", "enable", "disable"] {
+        for action in ["list", "enable", "disable", "update"] {
+            if action == "update" && kind != "plugin" {
+                continue;
+            }
             let mut subcommand = list_flags(Command::new(action));
             if action != "list" {
                 subcommand = subcommand
@@ -45,7 +48,17 @@ pub fn command() -> Command {
             Command::new("marketplace")
                 .about("Inspect registered native Marketplaces")
                 .subcommand_required(true)
-                .subcommand(list_flags(Command::new("list"))),
+                .subcommand(list_flags(Command::new("list")))
+                .subcommand(
+                    list_flags(Command::new("update"))
+                        .arg(Arg::new("native-names").required(true).num_args(1..))
+                        .arg(Arg::new("native-id").long("id").action(ArgAction::SetTrue))
+                        .arg(
+                            Arg::new("dry-run")
+                                .long("dry-run")
+                                .action(ArgAction::SetTrue),
+                        ),
+                ),
         )
 }
 fn list_flags(mut command: Command) -> Command {
@@ -262,6 +275,9 @@ fn write_codex(
 }
 pub fn run(matches: &ArgMatches) -> i32 {
     let (kind, plugin) = matches.subcommand().unwrap();
+    if plugin.subcommand().unwrap().0 == "update" {
+        return crate::native_update::run(kind, plugin.subcommand().unwrap().1);
+    }
     if kind == "skill" && plugin.subcommand().unwrap().0 != "list" {
         let (action, matches) = plugin.subcommand().unwrap();
         return crate::native_skills::run(action, matches);

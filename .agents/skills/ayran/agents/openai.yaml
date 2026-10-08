@@ -1,0 +1,6 @@
+interface:
+  display_name: "ayran"
+  short_description: "Explain, configure and troubleshoot ayran"
+
+policy:
+  allow_implicit_invocation: false

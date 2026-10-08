@@ -1,3 +1,4 @@
+mod builtin_skills;
 mod claude_config;
 mod cli;
 mod codex_config;
@@ -29,6 +30,7 @@ mod native_mcp;
 mod native_plugins;
 mod native_skill_write;
 mod native_skills;
+mod native_update;
 mod plugin_contents;
 mod plugin_enumeration;
 mod session_command;
@@ -65,7 +67,11 @@ fn run() -> i32 {
         completion::run(&raw[2..]);
         return 0;
     }
-    let matches = match cli::command().try_get_matches_from(&raw) {
+    let (user, user_error) = match ConfigLayers::load_user() {
+        Ok(user) => (user, None),
+        Err(error) => (ConfigLayers::default(), Some(error)),
+    };
+    let matches = match cli::with_presets(&user.presets).try_get_matches_from(&raw) {
         Ok(matches) => matches,
         Err(error)
             if matches!(
@@ -77,6 +83,16 @@ fn run() -> i32 {
             return 0;
         }
         Err(error) => {
+            // Invalid config must retain its diagnostic even when it prevents
+            // registering the Preset shorthand the user requested.
+            if error.kind() == ErrorKind::UnknownArgument
+                && user_error.is_some()
+                && cli::is_declared_preset_error(&error.to_string())
+                && let Some(diagnostic) = &user_error
+            {
+                render(diagnostic, false);
+                return 3;
+            }
             let clap_message = error.to_string();
             let positional = error.kind() == ErrorKind::UnknownArgument
                 && raw
@@ -176,7 +192,7 @@ fn run() -> i32 {
         render(&usage(message), quiet);
         return 2;
     }
-    for name in ["model", "effort", "alias"] {
+    for name in ["model", "effort", "alias", "preset"] {
         if matches
             .get_many::<String>(name)
             .is_some_and(|values| values.len() > 1)
@@ -186,6 +202,23 @@ fn run() -> i32 {
         }
     }
 
+    let mut presets = matches
+        .get_many::<String>("preset")
+        .map(|v| v.cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for name in user
+        .presets
+        .keys()
+        .filter(|name| !ayran_core::config::reserved_preset_name(name))
+    {
+        for _ in 0..matches.get_count(&format!("preset:{name}")) {
+            presets.push(name.clone());
+        }
+    }
+    if presets.len() > 1 {
+        render(&usage("at most one Preset may be selected"), quiet);
+        return 2;
+    }
     let effort = matches
         .get_one::<String>("effort")
         .map(|value| match value.as_str() {
@@ -218,6 +251,7 @@ fn run() -> i32 {
     };
     let mut request = Request {
         alias: matches.get_one::<String>("alias").cloned(),
+        preset: presets.pop(),
         harness: chosen.into_iter().next(),
         model: matches.get_one::<String>("model").cloned(),
         effort,
@@ -265,7 +299,7 @@ fn run() -> i32 {
             Ok(request) => request,
             Err(diagnostic) => {
                 render(&diagnostic, quiet);
-                return 3;
+                return if diagnostic.code == "usage" { 2 } else { 3 };
             }
         };
     }
@@ -541,6 +575,16 @@ fn run() -> i32 {
             .chain(&plan.trace.harness_args)
         {
             eprintln!("{entry}");
+        }
+        if let Some(cache) = &plan.generated_skills {
+            for target in cache.builtin.iter() {
+                let status = if target.is_dir() {
+                    "exists"
+                } else {
+                    "not created yet"
+                };
+                eprintln!("Built-in Skill cache: {} ({status})", target.display());
+            }
         }
         if let Some(cache) = &mcp_cache {
             let status = if cache.directory.is_dir() {

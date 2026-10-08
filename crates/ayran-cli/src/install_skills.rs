@@ -31,10 +31,17 @@ pub(crate) struct Change {
     copy_source: PathBuf,
     fetched: Option<crate::skill_git::Fetched>,
     git: Option<ayran_core::config::GitSkillBinding>,
+    builtin: Option<String>,
 }
 impl Change {
     pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({"harness":self.harness,"logical":self.logical,"id":if self.git.is_some() && self.identity.is_none() { serde_json::Value::Null } else { serde_json::json!(self.id) },"path":(!self.destination.as_os_str().is_empty()).then_some(&self.destination),"outcome":self.outcome,"copy":self.copy,"disable":self.disable,"source":self.git.as_ref().map(|g| &g.source),"ref":self.git.as_ref().and_then(|g| g.r#ref.as_ref()),"subdir":self.git.as_ref().map(|g| &g.subdir),"commit":self.identity.as_ref().and_then(|i| i.git.as_ref().map(|g| &g.commit))})
+        serde_json::json!({"harness":self.harness,"logical":self.logical,"id":if self.git.is_some() && self.identity.is_none() { serde_json::Value::Null } else { serde_json::json!(self.id) },"path":(!self.destination.as_os_str().is_empty()).then_some(&self.destination),"outcome":self.outcome,"copy":self.copy,"disable":self.disable,"source":self.source_label(),"ref":self.git.as_ref().and_then(|g| g.r#ref.as_ref()),"subdir":self.git.as_ref().map(|g| &g.subdir),"commit":self.identity.as_ref().and_then(|i| i.git.as_ref().map(|g| &g.commit))})
+    }
+    pub fn source_label(&self) -> Option<String> {
+        self.builtin
+            .as_ref()
+            .map(|name| format!("builtin:{name}"))
+            .or_else(|| self.git.as_ref().map(|g| g.source.clone()))
     }
     fn preflight_native(
         &mut self,
@@ -140,6 +147,7 @@ pub(crate) fn plan(
                     copy_source: PathBuf::new(),
                     fetched: None,
                     git: None,
+                    builtin: None,
                 };
                 match binding {
                     SkillBinding::Absent => return Err(skipped("deliberately absent Binding")),
@@ -156,9 +164,10 @@ pub(crate) fn plan(
                         change.id = row.name.clone();
                         change.destination = row.path.clone().unwrap_or_default();
                     }
-                    SkillBinding::Path(_) | SkillBinding::Git(_) => {
+                    SkillBinding::Path(_) | SkillBinding::Git(_) | SkillBinding::Builtin(_) => {
                         let user = ayran_core::config::user_config_path()?;
-                        if skill.path.file_name().is_some_and(|p| p == "ayran.toml")
+                        if !matches!(binding, SkillBinding::Builtin(_))
+                            && skill.path.file_name().is_some_and(|p| p == "ayran.toml")
                             && !crate::skill_enumeration::same_root(&skill.path, &user)
                             && !crate::trust::Store::read()?.trusted(&skill.path)?
                         {
@@ -193,6 +202,11 @@ pub(crate) fn plan(
                             ));
                         }
                         let identity = match binding {
+                            SkillBinding::Builtin(name) => {
+                                change.builtin = Some(name.clone());
+                                change.copy_source = crate::builtin_skills::directory(name)?;
+                                crate::skill_snapshot::builtin(name)?
+                            }
                             SkillBinding::Path(path) => {
                                 change.copy_source = path.clone();
                                 crate::skill_snapshot::source(path)?
@@ -245,7 +259,7 @@ pub(crate) fn plan(
                             _ => unreachable!(),
                         };
                         // Source paths remain canonical for local snapshots.
-                        if identity.git.is_none() {
+                        if matches!(binding, SkillBinding::Path(_)) {
                             change.copy_source = identity.source.clone();
                         }
                         let destination = home.directory.join("skills").join(&identity.name);
@@ -275,6 +289,10 @@ pub(crate) fn plan(
                                                     .canonicalize()
                                                     .unwrap_or_else(|_| path.clone())
                                                     == old.source
+                                        }
+                                        Some(SkillBinding::Builtin(name)) => {
+                                            old.source
+                                                == std::path::Path::new(&format!("builtin:{name}"))
                                         }
                                         Some(SkillBinding::Git(_)) => old
                                             .git
@@ -345,6 +363,9 @@ pub(crate) fn execute(plan: &mut Plan) {
         change.outcome = Outcome::Failed;
         let result = (|| {
             change.copy = "failed";
+            if change.builtin.is_some() {
+                crate::builtin_skills::materialize(&change.copy_source)?;
+            }
             change.copy = crate::skill_snapshot::publish(
                 &change.destination,
                 identity,
@@ -404,14 +425,21 @@ pub(crate) fn skip_pending(plan: &mut Plan) {
 }
 
 pub(crate) fn advice(layers: &ConfigLayers, harness: Harness) -> Vec<Diagnostic> {
+    let reachable = ayran_core::doctor::reachable_capabilities(
+        layers,
+        &crate::native_plugins::installed(),
+        harness,
+        CapabilityKind::Skill,
+    );
     let names = layers
         .skills
         .iter()
-        .filter(|(_, s)| {
-            matches!(
-                s.value.binding(harness),
-                Some(SkillBinding::Path(_) | SkillBinding::Git(_))
-            )
+        .filter(|(name, s)| {
+            (!s.path.as_os_str().is_empty() || reachable.contains(*name))
+                && matches!(
+                    s.value.binding(harness),
+                    Some(SkillBinding::Path(_) | SkillBinding::Git(_) | SkillBinding::Builtin(_))
+                )
         })
         .map(|(n, _)| n.clone())
         .collect::<Vec<_>>();

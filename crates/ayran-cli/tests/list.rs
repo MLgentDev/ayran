@@ -21,7 +21,7 @@ fn skill_list_filters_bindings_and_profiles_include_direct_skill_members() {
             serde_json::json!({"kind":"native", "id":"tdd"})
         };
         assert_eq!(
-            json["skills"][0]["bindings"],
+            json["skills"][1]["bindings"],
             serde_json::json!({harness: binding})
         );
         let output = workspace.run(&["list", "skills", &format!("--{harness}")]);
@@ -129,7 +129,7 @@ fn json_profiles_are_direct_members_and_kind_filters_select_rows() {
     assert_eq!(
         json,
         serde_json::json!({
-            "version":1, "aliases":[], "sessions":[], "marketplaces":[], "plugins":[], "skills":[], "mcp":[], "diagnostics":[],
+            "version":1, "aliases":[], "sessions":[], "marketplaces":[], "presets":[], "plugins":[], "skills":[], "mcp":[], "diagnostics":[],
             "summary":{"errors":0,"warnings":0,"notes":0},
             "profiles":[
                 {"name":"base", "default":false, "layer":user, "description":null,
@@ -166,7 +166,7 @@ fn text_keeps_one_row_per_plugin_when_descriptions_contain_line_breaks() {
         "[plugins.review]\nclaude=\"review@m\"\ndescription=\"Review\\tcode\\ncarefully\\rnow\"\n",
     )
     .unwrap();
-    let output = workspace.run(&["list", "--claude"]);
+    let output = workspace.run(&["list", "plugins", "--claude"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(text.lines().count(), 2);
@@ -182,10 +182,11 @@ fn json_reports_config_errors_in_the_same_envelope_and_empty_lists_succeed() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["plugins"], serde_json::json!([]));
-    assert_eq!(json["skills"], serde_json::json!([]));
+    assert_eq!(json["skills"].as_array().unwrap().len(), 1);
+    assert_eq!(json["skills"][0]["name"], "ayran");
     assert_eq!(json["profiles"], serde_json::json!([]));
     let profiles = workspace.run(&["list", "profiles", "--json"]);
-    assert_eq!(output.stdout, profiles.stdout);
+    assert_ne!(output.stdout, profiles.stdout);
     assert_eq!(profiles.status.code(), Some(0), "{profiles:?}");
     fs::write(workspace.0.path().join("ayran.toml"), "broken = [").unwrap();
     let output = workspace.run(&["list", "plugins", "--json"]);
@@ -232,7 +233,7 @@ fn json_has_a_versioned_envelope_and_lossless_effective_bindings() {
     assert_eq!(
         json,
         serde_json::json!({
-            "version": 1, "aliases": [], "sessions": [], "marketplaces": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
+            "version": 1, "aliases": [], "sessions": [], "marketplaces": [], "presets": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
             "profiles": [], "skills": [], "mcp": [],
             "plugins": [
                 {"name":"build", "default":true, "layer":user, "description":null, "bindings": {
@@ -244,7 +245,9 @@ fn json_has_a_versioned_envelope_and_lossless_effective_bindings() {
             ]
         })
     );
-    assert_eq!(output.stdout, workspace.run(&["list", "--json"]).stdout);
+    let all: serde_json::Value =
+        serde_json::from_slice(&workspace.run(&["list", "--json"]).stdout).unwrap();
+    assert_eq!(json["plugins"], all["plugins"]);
     let output = workspace.run(&["list", "--json", "--codex"]);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
@@ -267,7 +270,9 @@ fn harness_filters_keep_every_plugin_but_only_the_requested_binding_column() {
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert_eq!(
             output.stdout,
-            workspace.run(&["list", "--harness", harness]).stdout
+            workspace
+                .run(&["list", "plugins", "--harness", harness])
+                .stdout
         );
         let text = String::from_utf8(output.stdout).unwrap();
         assert_eq!(
@@ -318,9 +323,11 @@ fn list_shows_merged_plugins_and_distinguishes_missing_and_absent_bindings() {
             project.to_string_lossy().replace('\\', "\\\\")
         )
     );
-    assert_eq!(
-        workspace.run(&["list"]).stdout,
-        workspace.run(&["list", "plugins"]).stdout
+    assert!(
+        workspace
+            .run(&["list"])
+            .stdout
+            .starts_with(&workspace.run(&["list", "plugins"]).stdout)
     );
 }
 
@@ -340,7 +347,7 @@ fn list_shows_merged_skills_and_distinguishes_missing_and_absent_bindings() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
-            "name\tdefault\tlayer\tdescription\tclaude\tcodex\tcopilot\nbuild\t*\t{}\t\tbuild\t—\tbuild\nreview\t\t{}\tReview code\t—\t✗\tpath\n",
+            "name\tdefault\tlayer\tdescription\tclaude\tcodex\tcopilot\nayran\t\tbuilt-in\t\tbuiltin\tbuiltin\tbuiltin\nbuild\t*\t{}\t\tbuild\t—\tbuild\nreview\t\t{}\tReview code\t—\t✗\tpath\n",
             project.to_string_lossy().replace('\\', "\\\\"),
             project.to_string_lossy().replace('\\', "\\\\")
         )
@@ -367,9 +374,12 @@ fn skill_json_has_a_versioned_envelope_and_lossless_effective_bindings() {
     assert_eq!(
         json,
         serde_json::json!({
-            "version": 1, "aliases": [], "sessions": [], "marketplaces": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
+            "version": 1, "aliases": [], "sessions": [], "marketplaces": [], "presets": [], "diagnostics": [], "summary": {"errors":0,"warnings":0,"notes":0},
             "profiles": [], "plugins": [], "mcp": [],
             "skills": [
+                {"name":"ayran", "default":false, "layer":"built-in", "description":null, "bindings": {
+                    "claude":{"kind":"builtin", "name":"ayran"}, "codex":{"kind":"builtin", "name":"ayran"}, "copilot":{"kind":"builtin", "name":"ayran"}
+                }},
                 {"name":"build", "default":true, "layer":user, "description":null, "bindings": {
                     "claude":{"kind":"native", "id":"build"}, "codex":{"kind":"absent"}, "copilot":{"kind":"native", "id":"build"}
                 }},
@@ -383,11 +393,11 @@ fn skill_json_has_a_versioned_envelope_and_lossless_effective_bindings() {
     let output = workspace.run(&["list", "--json", "--codex"]);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        json["skills"][0]["bindings"],
+        json["skills"][1]["bindings"],
         serde_json::json!({"codex":{"kind":"absent"}})
     );
     assert_eq!(
-        json["skills"][1]["bindings"],
+        json["skills"][2]["bindings"],
         serde_json::json!({"codex":null})
     );
 }
@@ -534,7 +544,7 @@ harness = 'claude'
     assert_eq!(
         json,
         serde_json::json!({
-            "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "sessions":[], "marketplaces":[],
+            "version":1, "plugins":[], "skills":[], "mcp":[], "profiles":[], "sessions":[], "marketplaces":[], "presets":[],
             "aliases":expected, "diagnostics":[], "summary":{"errors":0,"warnings":0,"notes":0}
         })
     );
@@ -621,4 +631,64 @@ fn mcp_list_distinguishes_connector_bindings_from_native_servers() {
     let output = workspace.run(&["list", "mcp", "--claude"]);
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("\tconnector\n"));
+}
+
+#[test]
+fn builtin_layer_binding_validation_and_listing() {
+    let workspace = Workspace::new();
+    let output = workspace.run(&["list", "skills", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["skills"],
+        serde_json::json!([{
+            "name":"ayran", "default":false, "description":null, "layer":"built-in",
+            "bindings": {
+                "claude":{"kind":"builtin", "name":"ayran"},
+                "codex":{"kind":"builtin", "name":"ayran"},
+                "copilot":{"kind":"builtin", "name":"ayran"}
+            }
+        }])
+    );
+    let text = workspace.run(&["list", "skills"]);
+    assert!(
+        String::from_utf8_lossy(&text.stdout)
+            .contains("ayran\t\tbuilt-in\t\tbuiltin\tbuiltin\tbuiltin")
+    );
+    for binding in ["all", "claude", "codex", "copilot"] {
+        fs::write(
+            workspace.0.path().join("user.toml"),
+            format!("[skills.help]\n{binding} = {{ builtin = 'ayran' }}\n"),
+        )
+        .unwrap();
+        assert!(workspace.run(&["list", "skills"]).status.success());
+    }
+    for table in ["skills.help", "plugins.help", "mcp.help"] {
+        for value in [
+            "{ builtin = 'unknown' }",
+            "{ builtin = 42 }",
+            "{ builtin = 'ayran', path = '.' }",
+            "{ builtin = 'ayran', source = 'github:o/r' }",
+        ] {
+            fs::write(
+                workspace.0.path().join("user.toml"),
+                format!("[{table}]\nall = {value}\n"),
+            )
+            .unwrap();
+            let output = workspace.run(&["list", "--json"]);
+            assert_eq!(
+                output.status.code(),
+                Some(3),
+                "{table}: {value}: {output:?}"
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("config-invalid"));
+        }
+    }
+    for table in ["plugins.help", "mcp.help"] {
+        fs::write(
+            workspace.0.path().join("user.toml"),
+            format!("[{table}]\nall = {{ builtin = 'ayran' }}\n"),
+        )
+        .unwrap();
+        assert_eq!(workspace.run(&["list"]).status.code(), Some(3));
+    }
 }

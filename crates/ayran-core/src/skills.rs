@@ -13,6 +13,8 @@ use crate::resolve::{CapabilityOrigin, Request, profile_selections};
 pub struct SkillState {
     /// Validated path Skills, with their frontmatter name or directory-name fallback.
     pub names: BTreeMap<PathBuf, String>,
+    /// Embedded Skills and their content-addressed source directories.
+    pub builtin: BTreeMap<String, PathBuf>,
     /// XDG cache directory with the ayran suffix, resolved by the caller.
     pub cache_root: PathBuf,
     /// Standalone personal Skills discovered in the Harness home.
@@ -147,6 +149,24 @@ pub(crate) fn resolve(
                     Some(path.clone()),
                 )
             }
+            SkillBinding::Builtin(name) => {
+                let path = state.builtin.get(name).ok_or_else(|| {
+                    vec![
+                        Diagnostic::error(
+                            "config-invalid",
+                            format!("built-in Skill {name} has no generated-cache directory"),
+                            None,
+                        )
+                        .for_capability(
+                            harness,
+                            crate::diagnostic::CapabilityKind::Skill,
+                            logical,
+                            &skill.path,
+                        ),
+                    ]
+                })?;
+                (name.clone(), format!("builtin {name}"), Some(path.clone()))
+            }
             SkillBinding::Git(_) => {
                 return Err(vec![
                     Diagnostic::error(
@@ -166,7 +186,7 @@ pub(crate) fn resolve(
         };
         trace.push(format!(
             "Skill {logical}: {origin} → {name} ({item}, {})",
-            skill.path.display()
+            crate::config::layer_name(&skill.path)
         ));
         // Only native Bindings deduplicate across different logical names.
         if target.is_none() && !native_items.insert(name.clone()) {
@@ -348,7 +368,15 @@ pub(crate) fn resolve(
     let generated = if targets.is_empty() {
         None
     } else {
-        Some(GeneratedSkills::new(&state.cache_root, harness, targets))
+        let builtin = state
+            .builtin
+            .values()
+            .filter(|path| targets.values().any(|target| target == *path))
+            .cloned()
+            .collect();
+        let mut cache = GeneratedSkills::new(&state.cache_root, harness, targets);
+        cache.builtin = builtin;
+        Some(cache)
     };
     Ok(ResolvedSkills {
         trace,
@@ -481,7 +509,7 @@ pub(crate) fn select_from_profiles<'a>(
                 let message = format!(
                     "Skill {name}: skipped because of a false Binding for {} ({origin}, {})",
                     harness.binary(),
-                    skill.path.display()
+                    crate::config::layer_name(&skill.path)
                 );
                 trace.push(message.clone());
                 diagnostics.push(
@@ -490,7 +518,7 @@ pub(crate) fn select_from_profiles<'a>(
                         severity: crate::diagnostic::Severity::Note,
                         message,
                         hint: None,
-                        layer: Some(skill.path.display().to_string()),
+                        layer: Some(crate::config::layer_name(&skill.path).to_string()),
                         ..Diagnostic::default()
                     }
                     .for_capability(
@@ -511,6 +539,23 @@ pub(crate) fn select_from_profiles<'a>(
                             harness.binary()
                         ),
                         None,
+                    )
+                    .for_capability(
+                        harness,
+                        crate::diagnostic::CapabilityKind::Skill,
+                        name,
+                        &skill.path,
+                    ),
+                ]);
+            }
+            SkillBinding::Builtin(_) if harness == Harness::Codex => {
+                return Err(vec![
+                    Diagnostic::error(
+                        "unsupported-binding",
+                        format!(
+                            "Codex cannot load built-in Skill {name} without an installed snapshot"
+                        ),
+                        Some(&format!("ayran install --skill {name} --codex")),
                     )
                     .for_capability(
                         harness,

@@ -6,6 +6,7 @@ use ayran_core::resolve::{Request, resolve};
 fn request() -> Request {
     Request {
         alias: None,
+        preset: None,
         harness: Some(Harness::Claude),
         model: None,
         effort: None,
@@ -179,9 +180,10 @@ fn plugin_precedence_combines_defaults_explicit_origins_and_disables() {
         layers.aliases.insert(
             "work".into(),
             ayran_core::config::Alias {
-                args: vec![],
-                harness_args: true,
-                harness: Harness::Claude,
+                preset: None,
+                args: Some(vec![]),
+                harness_args: Some(true),
+                harness: Some(Harness::Claude),
                 model: None,
                 effort: None,
                 description: None,
@@ -289,9 +291,10 @@ fn profile_members_obey_plugin_disables_and_explicit_origins() {
         layers.aliases.insert(
             "work".into(),
             ayran_core::config::Alias {
-                args: vec![],
-                harness_args: true,
-                harness: Harness::Claude,
+                preset: None,
+                args: Some(vec![]),
+                harness_args: Some(true),
+                harness: Some(Harness::Claude),
                 model: None,
                 effort: None,
                 description: None,
@@ -495,9 +498,10 @@ fn default_profile_routes_obey_defaults_disables_and_stronger_origins() {
         layers.aliases.insert(
             "work".into(),
             ayran_core::config::Alias {
-                args: vec![],
-                harness_args: true,
-                harness: Harness::Claude,
+                preset: None,
+                args: Some(vec![]),
+                harness_args: Some(true),
+                harness: Some(Harness::Claude),
                 model: None,
                 effort: None,
                 description: None,
@@ -583,9 +587,10 @@ fn alias_profiles_are_explicit_but_their_plugins_keep_profile_origin() {
         layers.aliases.insert(
             "work".into(),
             ayran_core::config::Alias {
-                args: vec![],
-                harness_args: true,
-                harness: Harness::Claude,
+                preset: None,
+                args: Some(vec![]),
+                harness_args: Some(true),
+                harness: Some(Harness::Claude),
                 model: None,
                 effort: None,
                 description: None,
@@ -713,9 +718,10 @@ fn profile_disables_gate_expansion_without_disabling_member_plugins() {
                 layers.aliases.insert(
                     "work".into(),
                     ayran_core::config::Alias {
-                        args: vec![],
-                        harness_args: true,
-                        harness: Harness::Claude,
+                        preset: None,
+                        args: Some(vec![]),
+                        harness_args: Some(true),
+                        harness: Some(Harness::Claude),
                         model: None,
                         effort: None,
                         description: None,
@@ -1118,9 +1124,10 @@ fn skill_precedence_combines_defaults_explicit_origins_and_disables() {
         layers.aliases.insert(
             "work".into(),
             ayran_core::config::Alias {
-                args: vec![],
-                harness_args: true,
-                harness: Harness::Claude,
+                preset: None,
+                args: Some(vec![]),
+                harness_args: Some(true),
+                harness: Some(Harness::Claude),
                 model: None,
                 effort: None,
                 description: None,
@@ -1598,9 +1605,10 @@ fn mcp_precedence_combines_defaults_explicit_origins_and_disables() {
         layers.aliases.insert(
             "work".into(),
             ayran_core::config::Alias {
-                args: vec![],
-                harness_args: true,
-                harness: Harness::Claude,
+                preset: None,
+                args: Some(vec![]),
+                harness_args: Some(true),
+                harness: Some(Harness::Claude),
                 model: None,
                 effort: None,
                 description: None,

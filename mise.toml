@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.99.0", components = ["rustfmt", "clippy"] }
-just = "1.58.0"
-"aqua:axodotdev/cargo-dist" = "0.33.0"
-"cargo:cargo-edit" = "0.13.13"
+rust = { version = "latest", components = ["rustfmt", "clippy"] }
+just = "latest"
+"aqua:axodotdev/cargo-dist" = "latest"
+"cargo:cargo-edit" = "latest"

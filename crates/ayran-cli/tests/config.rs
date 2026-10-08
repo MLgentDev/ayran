@@ -75,8 +75,12 @@ fn list_reports_invalid_layers_without_loading_a_merged_view() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let rows = rows.as_array().unwrap();
-    assert_eq!(rows[0]["scope"], "user");
-    assert_eq!(rows[0]["valid"], false);
+    assert_eq!(
+        rows[0],
+        serde_json::json!({"scope":"built-in", "path":null, "exists":true, "valid":true})
+    );
+    assert_eq!(rows[1]["scope"], "user");
+    assert_eq!(rows[1]["valid"], false);
     for (name, scope, valid) in [
         ("ayran.toml", "project", false),
         ("ayran.local.toml", "local", true),
@@ -481,8 +485,12 @@ fn list_includes_layers_above_git_root_and_skips_missing_layers_and_duplicate_us
         .unwrap();
     let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let rows = rows.as_array().unwrap();
-    assert_eq!(rows[0]["exists"], false);
-    assert_eq!(rows[0]["scope"], "user");
+    assert_eq!(rows[1]["exists"], false);
+    assert_eq!(
+        rows[0],
+        serde_json::json!({"scope":"built-in", "path":null, "exists":true, "valid":true})
+    );
+    assert_eq!(rows[1]["scope"], "user");
     let above = rows
         .iter()
         .position(|row| row["path"] == workspace.path().join("ayran.toml").to_str().unwrap())

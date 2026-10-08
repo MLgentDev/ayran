@@ -40,6 +40,9 @@ pub fn normalize(mut request: Request) -> Request {
 /// Replay the stored request with new CLI flags, preserving typed order.
 pub fn merge(stored: &Request, flags: Request) -> Request {
     let mut merged = stored.clone();
+    if flags.preset.is_some() {
+        merged.preset = flags.preset;
+    }
     if flags.model.is_some() {
         merged.model = flags.model;
     }

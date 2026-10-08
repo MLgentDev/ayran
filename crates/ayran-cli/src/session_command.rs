@@ -90,17 +90,42 @@ pub fn replay(
                     Some("restore the Alias, or resume natively with the Harness"),
                 ));
             }
-            Some(alias) if alias.harness != record.harness => {
-                return Err(Diagnostic::error(
-                    "alias-harness-changed",
-                    format!("recorded Alias {name} now names another Harness"),
-                    None,
-                ));
+            Some(_) if record.request.preset.is_none() && flags.preset.is_none() => {
+                let mut original = record.request.clone();
+                original.harness = None;
+                let (harness, _) = original
+                    .resolve_harness(layers)
+                    .map_err(|mut errors| errors.remove(0))?;
+                if harness != record.harness {
+                    return Err(Diagnostic::error(
+                        "alias-harness-changed",
+                        format!("recorded Alias {name} now names another Harness"),
+                        None,
+                    ));
+                }
             }
             _ => {}
         }
     }
+    // A replacement Preset can repair a deleted or retargeted recorded Preset.
+    let replacement = flags.preset.is_some();
     let mut request = session::merge(&record.request, flags);
+    if let Some(name) = &request.preset {
+        let preset = layers.presets.get(name).ok_or_else(|| {
+            Diagnostic::error("unknown-preset", format!("unknown Preset {name}"), None)
+        })?;
+        if preset.value.harness != record.harness {
+            return Err(Diagnostic::error(
+                if replacement {
+                    "usage"
+                } else {
+                    "preset-harness-changed"
+                },
+                format!("Preset {name} names a different Harness than the recorded Session"),
+                None,
+            ));
+        }
+    }
     request.harness = Some(record.harness);
     Ok(request)
 }

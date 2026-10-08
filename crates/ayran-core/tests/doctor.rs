@@ -417,3 +417,28 @@ fn claude_remote_endpoint_signatures_unwrap_proxies_and_normalize_urls() {
         vec!["plugin:alpha:normalized", "plugin:alpha:proxied"]
     );
 }
+
+#[test]
+fn builtin_layer_is_silent_until_reachable_and_user_redefinitions_are_audited() {
+    let mut layers = ConfigLayers::builtin();
+    let state = DoctorState {
+        installed: vec![Harness::Codex],
+        ..Default::default()
+    };
+    assert!(audit(&layers, &state).is_empty());
+    layers.skills.get_mut("ayran").unwrap().value.default = true;
+    let diagnostics = audit(&layers, &state);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "unsupported-binding");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].layer.as_deref(), Some("built-in"));
+    assert_eq!(
+        diagnostics[0].hint.as_deref(),
+        Some("ayran install --skill ayran --codex")
+    );
+    layers.skills.get_mut("ayran").unwrap().value.default = false;
+    layers.skills.get_mut("ayran").unwrap().path = "user.toml".into();
+    let diagnostics = audit(&layers, &state);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].severity, Severity::Warning);
+}

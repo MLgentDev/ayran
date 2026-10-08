@@ -43,18 +43,22 @@ pub fn run(args: &[OsString]) {
     let Ok(layers) = ConfigLayers::load_for_completion() else {
         return;
     };
-    let output = complete_described(crate::cli::command(), &words, &layers)
-        .into_iter()
-        .map(|candidate| {
-            if descriptions {
-                let value = candidate.value.replace('\\', "\\\\").replace('\t', "\\t");
-                format!("{value}\t{}", candidate.description)
-            } else {
-                candidate.value
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let output = complete_described(
+        crate::cli::with_presets(&layers[0].presets),
+        &words,
+        &layers,
+    )
+    .into_iter()
+    .map(|candidate| {
+        if descriptions {
+            let value = candidate.value.replace('\\', "\\\\").replace('\t', "\\t");
+            format!("{value}\t{}", candidate.description)
+        } else {
+            candidate.value
+        }
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
     if !output.is_empty() {
         let _ = writeln!(io::stdout().lock(), "{output}");
     }
@@ -114,9 +118,12 @@ fn complete_described(
             if alias_selected {
                 return Vec::new();
             }
-            if matches!(command.get_name(), "plugin" | "skill" | "mcp")
-                && matches!(*word, "enable" | "disable")
+            if matches!(
+                command.get_name(),
+                "plugin" | "skill" | "mcp" | "marketplace"
+            ) && matches!(*word, "enable" | "disable" | "update")
             {
+                context.native_update = (*word == "update").then_some(command.get_name());
                 context.native_skill = command.get_name() == "skill";
                 context.native_mcp = command.get_name() == "mcp";
                 context.native_state = Some(if *word == "disable" {
@@ -211,6 +218,17 @@ fn complete_described(
         .filter(|arg| !arg.is_hide_set() && available(command, arg, &used))
         .filter(|arg| !alias_selected || !is_harness_arg(arg) && arg.get_id() != "alias")
     {
+        if let Some(name) = arg.get_id().as_str().strip_prefix("preset:")
+            && !context
+                .preset_candidates("")
+                .iter()
+                .any(|candidate| candidate.value == name)
+        {
+            continue;
+        }
+        if arg.get_id() == "preset" && context.preset.is_some() {
+            continue;
+        }
         if let Some(long) = arg.get_long() {
             candidates.push(Candidate::new(format!("--{long}"), arg_description(arg)));
         }
@@ -239,6 +257,7 @@ struct CompletionContext<'a> {
     layers: &'a [ConfigLayers],
     explicit: Option<Harness>,
     alias: Option<&'a ayran_core::config::Alias>,
+    preset: Option<&'a ayran_core::config::Preset>,
     invalid: bool,
     selected_mcp: Vec<String>,
     disabled_mcp: Vec<String>,
@@ -250,6 +269,7 @@ struct CompletionContext<'a> {
     disabled_profiles: Vec<String>,
     no_defaults: bool,
     native_state: Option<crate::native_plugins::NativeState>,
+    native_update: Option<&'a str>,
     native_id: bool,
     native_skill: bool,
     native_mcp: bool,
@@ -261,6 +281,7 @@ impl<'a> CompletionContext<'a> {
             layers,
             explicit: None,
             alias: None,
+            preset: None,
             invalid: false,
             selected_mcp: Vec::new(),
             disabled_mcp: Vec::new(),
@@ -272,6 +293,7 @@ impl<'a> CompletionContext<'a> {
             disabled_profiles: Vec::new(),
             no_defaults: false,
             native_state: None,
+            native_update: None,
             native_id: false,
             native_skill: false,
             native_mcp: false,
@@ -328,6 +350,23 @@ impl<'a> CompletionContext<'a> {
                     .extend(value.split(',').map(str::to_owned));
                 return;
             }
+            "preset" => {
+                self.preset = self
+                    .layers
+                    .first()
+                    .and_then(|layer| layer.presets.get(value))
+                    .map(|p| &p.value);
+                self.invalid |= self.preset.is_none();
+                return;
+            }
+            id if id.starts_with("preset:") => {
+                self.preset = self
+                    .layers
+                    .first()
+                    .and_then(|layer| layer.presets.get(&id[7..]))
+                    .map(|p| &p.value);
+                return;
+            }
             "harness" => value,
             "claude" | "codex" | "copilot" => arg.get_id().as_str(),
             "alias" => {
@@ -348,17 +387,42 @@ impl<'a> CompletionContext<'a> {
         };
     }
 
+    fn configured_harness(&self) -> Option<Harness> {
+        self.preset.map(|preset| preset.harness).or_else(|| {
+            self.alias
+                .and_then(|alias| alias.configured_harness(self.layers.first()?))
+        })
+    }
+
+    fn harness_conflict(&self) -> bool {
+        self.explicit
+            .zip(self.configured_harness())
+            .is_some_and(|(a, b)| a != b)
+    }
+
+    fn preset_candidates(&self, prefix: &str) -> Vec<Candidate> {
+        if self.invalid || self.preset.is_some() {
+            return Vec::new();
+        }
+        self.layers
+            .first()
+            .into_iter()
+            .flat_map(|layer| &layer.presets)
+            .filter(|(name, p)| {
+                name.starts_with(prefix) && self.explicit.is_none_or(|h| p.value.harness == h)
+            })
+            .map(|(name, p)| {
+                Candidate::new(name, p.value.description.as_deref().unwrap_or("Preset"))
+            })
+            .collect()
+    }
+
     fn harness(&self) -> Option<Harness> {
-        if self.invalid
-            || self
-                .explicit
-                .zip(self.alias)
-                .is_some_and(|(h, a)| h != a.harness)
-        {
+        if self.invalid || self.harness_conflict() {
             return None;
         }
         self.explicit
-            .or_else(|| self.alias.map(|alias| alias.harness))
+            .or_else(|| self.configured_harness())
             .or_else(|| {
                 self.layers
                     .iter()
@@ -368,12 +432,7 @@ impl<'a> CompletionContext<'a> {
     }
 
     fn plugin_candidates(&self, prefix: &str, completed: &str, disable: bool) -> Vec<Candidate> {
-        if self.invalid
-            || self
-                .explicit
-                .zip(self.alias)
-                .is_some_and(|(h, a)| h != a.harness)
-        {
+        if self.invalid || self.harness_conflict() {
             return Vec::new();
         }
         let harness = self.harness();
@@ -434,12 +493,7 @@ impl<'a> CompletionContext<'a> {
         disable: bool,
         kind: MemberKind,
     ) -> Vec<Candidate> {
-        if self.invalid
-            || self
-                .explicit
-                .zip(self.alias)
-                .is_some_and(|(h, a)| h != a.harness)
-        {
+        if self.invalid || self.harness_conflict() {
             return Vec::new();
         }
         let harness = self.harness();
@@ -454,7 +508,9 @@ impl<'a> CompletionContext<'a> {
                     for (name, skill) in &layer.skills {
                         let usable = harness.is_none_or(|h| match skill.value.binding(h) {
                             Some(SkillBinding::Native(_) | SkillBinding::Git(_)) => true,
-                            Some(SkillBinding::Path(_)) => h != Harness::Codex,
+                            Some(SkillBinding::Path(_) | SkillBinding::Builtin(_)) => {
+                                h != Harness::Codex
+                            }
                             Some(SkillBinding::Absent) | None => false,
                         });
                         definitions.insert(
@@ -615,12 +671,7 @@ impl<'a> CompletionContext<'a> {
     }
 
     fn profile_candidates(&self, prefix: &str, completed: &str, disable: bool) -> Vec<Candidate> {
-        if self.invalid
-            || self
-                .explicit
-                .zip(self.alias)
-                .is_some_and(|(h, a)| h != a.harness)
-        {
+        if self.invalid || self.harness_conflict() {
             return Vec::new();
         }
         let profiles: std::collections::BTreeMap<_, _> = if disable {
@@ -663,8 +714,17 @@ impl<'a> CompletionContext<'a> {
             if let Some(model) = &layer.settings(harness).model {
                 models.insert(model.value.clone(), model.path.display().to_string());
             }
+            for (name, preset) in &layer.presets {
+                if preset.value.harness == harness
+                    && let Some(model) = &preset.value.model
+                {
+                    models
+                        .entry(model.clone())
+                        .or_insert_with(|| format!("Preset {name}"));
+                }
+            }
             for (name, alias) in &layer.aliases {
-                if alias.harness == harness
+                if alias.effective_harness(layer) == Some(harness)
                     && let Some(model) = &alias.model
                 {
                     models
@@ -825,6 +885,9 @@ fn value_candidates(
     prefix: &str,
     context: &CompletionContext<'_>,
 ) -> Vec<Candidate> {
+    if arg.get_id() == "preset" {
+        return context.preset_candidates(prefix);
+    }
     if arg.get_id() == "install-skill" {
         let mut skills = std::collections::BTreeMap::new();
         for layer in context.layers {
@@ -845,6 +908,7 @@ fn value_candidates(
                                     ayran_core::config::SkillBinding::Native(_)
                                         | ayran_core::config::SkillBinding::Git(_)
                                         | ayran_core::config::SkillBinding::Path(_)
+                                        | ayran_core::config::SkillBinding::Builtin(_)
                                 )
                             )
                         })
@@ -893,6 +957,19 @@ fn value_candidates(
             .into_iter()
             .filter(|h| context.explicit.is_none_or(|selected| selected == *h))
             .collect::<Vec<_>>();
+        if let Some(kind) = context.native_update {
+            return crate::native_update::completion(
+                kind,
+                &layers,
+                &harnesses,
+                context.native_id,
+                context.explicit.is_some(),
+            )
+            .into_iter()
+            .filter(|(n, _)| n.starts_with(prefix))
+            .map(|(n, d)| Candidate::new(n, d))
+            .collect();
+        }
         if context.native_skill {
             return crate::native_skills::completion(
                 &layers,

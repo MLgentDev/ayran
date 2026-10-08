@@ -26,7 +26,7 @@ pub fn prepare(plan: &mut LaunchPlan) -> Result<Option<GeneratedMcp>, Diagnostic
     let root = crate::generated_cache::root().ok_or_else(|| {
         Diagnostic::error(
             "config-invalid",
-            "cannot locate MCP cache without XDG_CACHE_HOME or HOME",
+            crate::generated_cache::missing_root_message("MCP"),
             None,
         )
     })?;

@@ -12,6 +12,7 @@ pub fn summary(request: &Request) -> String {
     let mut words = Vec::new();
     for (flag, value) in [
         ("--alias", request.alias.as_deref()),
+        ("--preset", request.preset.as_deref()),
         ("-m", request.model.as_deref()),
         ("-e", request.effort.map(|effort| effort.as_str())),
     ] {

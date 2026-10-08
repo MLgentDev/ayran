@@ -9,7 +9,17 @@ use crate::launch::HomeMode;
 
 pub struct Sourced<T> {
     pub value: T,
+    /// Empty for the Built-in layer, which has no file path.
     pub path: PathBuf,
+}
+
+/// Display a declaring layer without inventing a file path for the Built-in layer.
+pub fn layer_name(path: &Path) -> std::borrow::Cow<'_, str> {
+    if path.as_os_str().is_empty() {
+        "built-in".into()
+    } else {
+        path.to_string_lossy()
+    }
 }
 
 #[derive(Default)]
@@ -21,10 +31,20 @@ pub struct HarnessSettings {
     pub home_mode: HomeMode,
 }
 
-pub struct Alias {
+pub struct Preset {
+    pub harness: Harness,
+    pub model: Option<String>,
+    pub effort: Option<Effort>,
     pub args: Vec<String>,
     pub harness_args: bool,
-    pub harness: Harness,
+    pub description: Option<String>,
+}
+
+pub struct Alias {
+    pub preset: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub harness_args: Option<bool>,
+    pub harness: Option<Harness>,
     pub model: Option<String>,
     pub effort: Option<Effort>,
     pub description: Option<String>,
@@ -37,6 +57,23 @@ pub struct Alias {
     pub disabled_skills: Vec<String>,
     pub disabled_mcp: Vec<String>,
     pub disabled_profiles: Vec<String>,
+}
+
+impl Alias {
+    /// Harness fixed by this Alias, before default_harness is considered.
+    pub fn configured_harness(&self, layers: &ConfigLayers) -> Option<Harness> {
+        self.harness.or_else(|| {
+            self.preset
+                .as_ref()
+                .and_then(|name| layers.presets.get(name))
+                .map(|preset| preset.value.harness)
+        })
+    }
+
+    pub fn effective_harness(&self, layers: &ConfigLayers) -> Option<Harness> {
+        self.configured_harness(layers)
+            .or_else(|| layers.default_harness.as_ref().map(|h| h.value))
+    }
 }
 
 pub enum PluginBinding {
@@ -70,6 +107,7 @@ pub enum SkillBinding {
     Native(String),
     Path(PathBuf),
     Git(GitSkillBinding),
+    Builtin(String),
     Absent,
 }
 
@@ -118,6 +156,7 @@ pub struct ConfigLayers {
     pub codex: HarnessSettings,
     pub copilot: HarnessSettings,
     pub aliases: BTreeMap<String, Alias>,
+    pub presets: BTreeMap<String, Sourced<Preset>>,
     pub plugins: BTreeMap<String, Sourced<Plugin>>,
     pub marketplaces: BTreeMap<String, Sourced<crate::marketplace::Marketplace>>,
     pub skills: BTreeMap<String, Sourced<Skill>>,
@@ -138,8 +177,25 @@ pub struct ConfigLayers {
 }
 
 impl ConfigLayers {
+    pub fn builtin() -> Self {
+        let mut layers = Self::default();
+        layers.skills.insert(
+            "ayran".into(),
+            Sourced {
+                path: PathBuf::new(),
+                value: Skill {
+                    all: Some(SkillBinding::Builtin("ayran".into())),
+                    ..Skill::default()
+                },
+            },
+        );
+        layers
+    }
+
     pub fn load_user() -> Result<Self, Diagnostic> {
-        Ok(Self::read(&user_config_path()?, true)?.unwrap_or_default())
+        let mut layers = Self::builtin();
+        layers.merge_user(Self::read(&user_config_path()?, true)?.unwrap_or_default());
+        Ok(layers)
     }
 
     pub fn load() -> Result<Self, Diagnostic> {
@@ -159,13 +215,20 @@ impl ConfigLayers {
 
     fn load_unmerged() -> Result<Vec<Self>, Diagnostic> {
         let user_path = user_config_path()?;
-        let mut layers = vec![Self::read_layer(&user_path, true)?.unwrap_or_default()];
+        let mut layers = vec![Self::load_user()?];
         for path in directory_config_paths(&user_path)? {
             if let Some(layer) = Self::read_layer(&path, false)? {
                 layers.push(layer);
             }
         }
         Ok(layers)
+    }
+
+    fn merge_user(&mut self, user: Self) {
+        self.claude.home_mode = user.claude.home_mode;
+        self.codex.home_mode = user.codex.home_mode;
+        self.copilot.home_mode = user.copilot.home_mode;
+        self.merge(user);
     }
 
     fn merge(&mut self, nearer: Self) {
@@ -215,6 +278,8 @@ impl ConfigLayers {
             self.disabled_default_profiles.remove(name);
         }
         self.profiles.extend(nearer.profiles);
+        self.presets.extend(nearer.presets);
+        self.aliases.extend(nearer.aliases);
         if nearer.default_harness.is_some() {
             self.default_harness = nearer.default_harness;
         }
@@ -367,6 +432,107 @@ impl ConfigLayers {
                         }
                     }
                 }
+                "presets" => {
+                    if !is_user {
+                        report(user_level_only(path, "presets"), diagnostics, collect)?;
+                    }
+                    for (name, value) in value
+                        .as_table()
+                        .ok_or_else(|| invalid(path, "presets must be a table"))?
+                    {
+                        if !valid_alias_name(name) {
+                            report(
+                                Diagnostic::error(
+                                    "invalid-name",
+                                    format!("invalid Preset name {name}"),
+                                    None,
+                                ),
+                                diagnostics,
+                                collect,
+                            )?;
+                        }
+                        if reserved_preset_name(name) {
+                            report(
+                                Diagnostic::error(
+                                    "preset-reserved-name",
+                                    format!("Preset {name} conflicts with a launch flag"),
+                                    None,
+                                ),
+                                diagnostics,
+                                collect,
+                            )?;
+                        }
+                        let mut harness = None;
+                        let mut model = None;
+                        let mut effort = None;
+                        let mut args = Vec::new();
+                        let mut harness_args = true;
+                        let mut description = None;
+                        for (field, value) in value.as_table().ok_or_else(|| {
+                            invalid(path, format!("presets.{name} must be a table"))
+                        })? {
+                            match field.as_str() {
+                                "harness" => {
+                                    harness = Some(parse_harness(
+                                        value,
+                                        path,
+                                        &format!("presets.{name}.harness"),
+                                    )?)
+                                }
+                                "model" | "description" => {
+                                    let text = value
+                                        .as_str()
+                                        .ok_or_else(|| {
+                                            invalid(
+                                                path,
+                                                format!("presets.{name}.{field} must be a string"),
+                                            )
+                                        })?
+                                        .to_owned();
+                                    if field == "model" {
+                                        model = Some(text);
+                                    } else {
+                                        description = Some(text);
+                                    }
+                                }
+                                "effort" => effort = Some(parse_effort(value, path)?),
+                                "args" => {
+                                    args = parse_args(value, path, &format!("presets.{name}.args"))?
+                                }
+                                "harness_args" => {
+                                    harness_args = parse_bool(
+                                        value,
+                                        path,
+                                        &format!("presets.{name}.harness_args"),
+                                    )?
+                                }
+                                _ => {
+                                    return Err(invalid(
+                                        path,
+                                        format!("unknown key presets.{name}.{field}"),
+                                    ));
+                                }
+                            }
+                        }
+                        let harness = harness.ok_or_else(|| {
+                            invalid(path, format!("presets.{name}.harness is required"))
+                        })?;
+                        layers.presets.insert(
+                            name.clone(),
+                            Sourced {
+                                value: Preset {
+                                    harness,
+                                    model,
+                                    effort,
+                                    args,
+                                    harness_args,
+                                    description,
+                                },
+                                path: path.to_path_buf(),
+                            },
+                        );
+                    }
+                }
                 "aliases" => {
                     if !is_user {
                         report(user_level_only(path, "aliases"), diagnostics, collect)?;
@@ -390,6 +556,7 @@ impl ConfigLayers {
                             invalid(path, format!("aliases.{name} must be a table"))
                         })?;
                         let mut harness = None;
+                        let mut preset = None;
                         let mut model = None;
                         let mut effort = None;
                         let mut description = None;
@@ -398,11 +565,26 @@ impl ConfigLayers {
                         let mut mcp = Vec::new();
                         let mut profiles = Vec::new();
                         let mut defaults = true;
-                        let mut args = Vec::new();
-                        let mut harness_args = true;
+                        let mut args = None;
+                        let mut harness_args = None;
                         let mut disabled = Disable::default();
                         for (field, value) in fields {
                             match field.as_str() {
+                                "preset" => {
+                                    preset = Some(
+                                        value
+                                            .as_str()
+                                            .ok_or_else(|| {
+                                                invalid(
+                                                    path,
+                                                    format!(
+                                                        "aliases.{name}.preset must be a string"
+                                                    ),
+                                                )
+                                            })?
+                                            .to_owned(),
+                                    );
+                                }
                                 "harness" => {
                                     harness = Some(parse_harness(
                                         value,
@@ -454,14 +636,18 @@ impl ConfigLayers {
                                     )?
                                 }
                                 "args" => {
-                                    args = parse_args(value, path, &format!("aliases.{name}.args"))?
+                                    args = Some(parse_args(
+                                        value,
+                                        path,
+                                        &format!("aliases.{name}.args"),
+                                    )?)
                                 }
                                 "harness_args" => {
-                                    harness_args = parse_bool(
+                                    harness_args = Some(parse_bool(
                                         value,
                                         path,
                                         &format!("aliases.{name}.harness_args"),
-                                    )?
+                                    )?)
                                 }
                                 "defaults" => {
                                     defaults = parse_bool(
@@ -493,12 +679,10 @@ impl ConfigLayers {
                                 }
                             }
                         }
-                        let harness = harness.ok_or_else(|| {
-                            invalid(path, format!("aliases.{name}.harness is required"))
-                        })?;
                         layers.aliases.insert(
                             name.clone(),
                             Alias {
+                                preset,
                                 args,
                                 harness_args,
                                 harness,
@@ -752,6 +936,24 @@ impl ConfigLayers {
         }
         if !is_user {
             layers.aliases.clear();
+            layers.presets.clear();
+        }
+        for (name, alias) in &layers.aliases {
+            if let Some(preset) = alias
+                .preset
+                .as_ref()
+                .and_then(|name| layers.presets.get(name))
+                && alias.harness.is_some_and(|h| h != preset.value.harness)
+            {
+                report(
+                    invalid(
+                        path,
+                        format!("Alias {name} Harness conflicts with its Preset"),
+                    ),
+                    diagnostics,
+                    collect,
+                )?;
+            }
         }
         Ok(layers)
     }
@@ -772,7 +974,7 @@ impl ConfigLayers {
             Ok(paths) => paths,
             Err(d) => return (Self::default(), vec![d]),
         };
-        let mut merged = Self::default();
+        let mut merged = Self::builtin();
         for (path, is_user) in paths {
             let contents = match fs::read_to_string(&path) {
                 Ok(contents) => contents,
@@ -789,7 +991,7 @@ impl ConfigLayers {
                     Self::parse_value(&value, &path, is_user, &mut diagnostics, true)
                 });
             match parsed {
-                Ok(layer) if is_user => merged = layer,
+                Ok(layer) if is_user => merged.merge_user(layer),
                 Ok(layer) => merged.merge(layer),
                 Err(d) => diagnostics.push(d),
             }
@@ -1099,6 +1301,18 @@ fn parse_skill_binding(
     path: &Path,
     field: &str,
 ) -> Result<SkillBinding, Diagnostic> {
+    if let Some(fields) = value.as_table().filter(|f| f.contains_key("builtin")) {
+        if fields.len() != 1 {
+            return Err(invalid(
+                path,
+                format!("{field}: builtin accepts no other keys"),
+            ));
+        }
+        if fields["builtin"].as_str() != Some("ayran") {
+            return Err(invalid(path, format!("{field}: unknown built-in Skill")));
+        }
+        return Ok(SkillBinding::Builtin("ayran".into()));
+    }
     if let Some(fields) = value.as_table().filter(|f| f.contains_key("source")) {
         if fields
             .keys()
@@ -1190,4 +1404,38 @@ fn parse_skill_binding(
         PluginBinding::Path(p) => SkillBinding::Path(p),
         PluginBinding::Absent => SkillBinding::Absent,
     })
+}
+
+/// Preset shorthands share the namespace of launch and resume flags.
+pub fn reserved_preset_name(name: &str) -> bool {
+    matches!(
+        name,
+        "claude"
+            | "codex"
+            | "copilot"
+            | "harness"
+            | "mcp"
+            | "skill"
+            | "plugin"
+            | "profile"
+            | "no-profile"
+            | "no-mcp"
+            | "no-skill"
+            | "no-plugin"
+            | "no-harness-args"
+            | "no-defaults"
+            | "model"
+            | "alias"
+            | "effort"
+            | "dry-run"
+            | "json"
+            | "quiet"
+            | "help"
+            | "version"
+            | "preset"
+            | "fork"
+            | "native"
+            | "last"
+            | "all"
+    )
 }

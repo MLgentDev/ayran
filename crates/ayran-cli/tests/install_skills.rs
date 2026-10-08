@@ -546,3 +546,148 @@ fn another_declared_skill_cannot_take_over_an_owned_native_identity() {
         "fixture asset"
     );
 }
+
+#[test]
+fn builtin_codex_install_has_stable_identity_and_enables_selection() {
+    let w = Workspace::new("codex");
+    w.write("user.toml", "");
+    let args = ["install", "--skill", "ayran", "--codex", "--json"];
+    let preview = w.json(
+        &[
+            "install",
+            "--skill",
+            "ayran",
+            "--codex",
+            "--dry-run",
+            "--json",
+        ],
+        0,
+    );
+    assert_eq!(preview["skills"][0]["source"], "builtin:ayran");
+    assert_eq!(preview["skills"][0]["copy"], "planned");
+    assert!(!w.0.path().join("cache").exists());
+    assert!(!w.0.path().join(".codex").exists());
+    let out = w.json(&args, 0);
+    assert_eq!(out["skills"][0]["source"], "builtin:ayran");
+    assert_eq!(out["skills"][0]["copy"], "added");
+    let destination = w.0.path().join(".codex/skills/ayran");
+    let record: Value =
+        serde_json::from_slice(&fs::read(destination.join(".ayran-snapshot.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["source"], "builtin:ayran");
+    assert!(destination.join("references/install.md").is_file());
+    assert!(destination.join("agents/openai.yaml").is_file());
+    let listing = w.json(&["native", "skill", "list", "--codex", "--json"], 0);
+    assert!(listing.to_string().contains("off"));
+    let launch = w.run(&["--codex", "--skill", "ayran", "--dry-run"]);
+    assert!(launch.status.success(), "{launch:?}");
+    assert!(String::from_utf8_lossy(&launch.stdout).contains(".codex/skills/ayran/SKILL.md"));
+    assert!(!String::from_utf8_lossy(&launch.stderr).contains("skill-outdated"));
+    assert_eq!(w.json(&args, 0)["skills"][0]["copy"], "unchanged");
+}
+
+#[test]
+fn builtin_old_content_stays_usable_and_reinstall_replaces_it() {
+    let w = Workspace::new("codex");
+    // An independently installed fixture represents a previous binary's tree.
+    w.write(
+        "source/SKILL.md",
+        "---\nname: ayran\ndescription: Older built-in manual\n---\nOld manual.\n",
+    );
+    w.json(&["install", "--skill", "logical", "--codex", "--json"], 0);
+    let record_path = w.0.path().join(".codex/skills/ayran/.ayran-snapshot.json");
+    let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    record["source"] = "builtin:ayran".into();
+    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    w.write("user.toml", "");
+    let optional = w.json(&["doctor", "--codex", "--json"], 0);
+    assert!(
+        !optional.to_string().contains("skill-outdated"),
+        "{optional}"
+    );
+    w.write(
+        "user.toml",
+        "[skills.ayran]\nall = { builtin = 'ayran' }\ndefault = true\n",
+    );
+    let launch = w.run(&["--codex", "--skill", "ayran", "--dry-run"]);
+    assert!(launch.status.success(), "{launch:?}");
+    assert!(
+        String::from_utf8_lossy(&launch.stderr).contains("skill-outdated"),
+        "{launch:?}"
+    );
+    let doctor = w.json(&["doctor", "--codex", "--json"], 0);
+    assert!(doctor.to_string().contains("skill-outdated"), "{doctor}");
+    assert!(
+        doctor
+            .to_string()
+            .contains("ayran install --skill ayran --codex")
+    );
+    assert!(!w.0.path().join("cache/ayran/builtin-skills").exists());
+    let args = ["install", "--skill", "ayran", "--codex", "--json"];
+    assert_eq!(w.json(&args, 0)["skills"][0]["copy"], "replaced");
+    assert_eq!(w.json(&args, 0)["skills"][0]["copy"], "unchanged");
+    let doctor = w.json(&["doctor", "--codex", "--json"], 0);
+    assert!(!doctor.to_string().contains("skill-outdated"), "{doctor}");
+    w.write(".codex/skills/ayran/SKILL.md", "modified by the user");
+    assert!(
+        w.json(&args, 3)
+            .to_string()
+            .contains("skill-install-conflict")
+    );
+    assert_eq!(
+        fs::read_to_string(w.0.path().join(".codex/skills/ayran/SKILL.md")).unwrap(),
+        "modified by the user"
+    );
+}
+
+#[test]
+fn builtin_install_on_all_harnesses_needs_no_project_trust() {
+    for harness in ["claude", "codex", "copilot"] {
+        let w = Workspace::new(harness);
+        w.write("user.toml", "");
+        w.write(
+            "ayran.toml",
+            "[skills.manual]\nall = { builtin = 'ayran' }\n",
+        );
+        let flag = format!("--{harness}");
+        let args = ["install", "--skill", "manual", &flag, "--json"];
+        let result = w.json(&args, 0);
+        assert_eq!(result["skills"][0]["source"], "builtin:ayran");
+        assert_eq!(result["skills"][0]["copy"], "added");
+        assert!(!w.0.path().join("state").exists());
+        if harness == "copilot" {
+            assert_eq!(result["skills"][0]["disable"], "unsupported");
+            assert!(result.to_string().contains("skill-install-on"));
+        } else {
+            assert_eq!(result["skills"][0]["disable"], "changed");
+        }
+        let text = w.run(&["install", "--skill", "manual", &flag]);
+        assert!(text.status.success(), "{text:?}");
+        assert!(String::from_utf8_lossy(&text.stdout).contains("builtin:ayran"));
+        assert_eq!(w.json(&args, 0)["skills"][0]["copy"], "unchanged");
+        let launch = w.run(&[&flag, "--skill", "manual", "--dry-run"]);
+        assert!(launch.status.success(), "{launch:?}");
+    }
+}
+
+#[test]
+fn doctor_advises_install_for_reachable_builtin_without_writes() {
+    let w = Workspace::new("codex");
+    w.write("user.toml", "");
+    let doctor = w.json(&["doctor", "--codex", "--json"], 0);
+    assert!(
+        !doctor.to_string().contains("skill-not-installed"),
+        "{doctor}"
+    );
+    w.write(
+        "user.toml",
+        "[skills.ayran]\nall = { builtin = 'ayran' }\ndefault = true\n",
+    );
+    let doctor = w.json(&["doctor", "--codex", "--json"], 1);
+    assert!(
+        doctor.to_string().contains("skill-not-installed"),
+        "{doctor}"
+    );
+    assert!(!w.0.path().join(".codex").exists());
+    assert!(!w.0.path().join("cache/ayran/builtin-skills").exists());
+}

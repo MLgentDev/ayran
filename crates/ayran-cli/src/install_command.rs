@@ -135,13 +135,16 @@ pub fn run(matches: &ArgMatches) -> i32 {
         }
         for c in &plan.skills {
             crate::list_command::print_row(vec![format!(
-                "{} → {} {}: {} (copy: {}, native off: {})",
+                "{} → {} {}: {} (copy: {}, native off: {}){}",
                 c.logical,
                 c.harness.binary(),
                 c.id,
                 c.outcome.as_str(),
                 c.copy,
-                c.disable
+                c.disable,
+                c.source_label()
+                    .map(|s| format!(" [source: {s}]"))
+                    .unwrap_or_default()
             )]);
         }
         for d in &plan.diagnostics {

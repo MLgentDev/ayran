@@ -113,7 +113,7 @@ pub fn command() -> Command {
         )
         .arg(
             Arg::new("no-harness-args")
-                .help("Drop configured Harness and Alias args")
+                .help("Drop configured Harness, Alias and Preset args")
                 .long("no-harness-args")
                 .action(ArgAction::SetTrue),
         )
@@ -122,6 +122,12 @@ pub fn command() -> Command {
                 .help("Drop every Default")
                 .long("no-defaults")
                 .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("preset")
+                .long("preset")
+                .help("Choose a Preset")
+                .action(ArgAction::Append),
         )
         .arg(
             Arg::new("model")
@@ -208,4 +214,53 @@ pub fn command() -> Command {
         )
         .args(command.get_arguments().cloned());
     command.subcommand(resume)
+}
+
+/// Add user-defined shorthands to both launch and resume grammars.
+pub fn with_presets(
+    presets: &std::collections::BTreeMap<
+        String,
+        ayran_core::config::Sourced<ayran_core::config::Preset>,
+    >,
+) -> Command {
+    let mut command = command();
+    for (name, preset) in presets {
+        if ayran_core::config::reserved_preset_name(name) {
+            continue;
+        }
+        let arg = Arg::new(format!("preset:{name}"))
+            .long(name.clone())
+            .help(
+                preset
+                    .value
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("Use Preset {name}")),
+            )
+            .action(ArgAction::Count);
+        command = command
+            .arg(arg.clone())
+            .mut_subcommand("resume", |resume| resume.arg(arg));
+    }
+    command
+}
+
+/// A semantic config error can prevent registering a declared shorthand.
+/// Recover only its name so unrelated parser errors retain usage precedence.
+pub fn is_declared_preset_error(message: &str) -> bool {
+    let Some(config) = ayran_core::config::user_config_path()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
+    else {
+        return false;
+    };
+    config
+        .get("presets")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|presets| {
+            presets
+                .keys()
+                .any(|name| message.contains(&format!("unexpected argument '--{name}'")))
+        })
 }

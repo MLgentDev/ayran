@@ -5,14 +5,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use ayran_core::harness::Harness;
-
 pub fn root() -> Option<PathBuf> {
-    env::var_os("XDG_CACHE_HOME")
+    #[cfg(windows)]
+    let root = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let root = env::var_os("XDG_CACHE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .map(|root| root.join("ayran"))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
+    root.map(|root| root.join("ayran"))
+}
+
+pub fn missing_root_message(cache: &str) -> String {
+    #[cfg(windows)]
+    let variables = "LOCALAPPDATA";
+    #[cfg(not(windows))]
+    let variables = "XDG_CACHE_HOME or HOME";
+    format!("cannot locate {cache} cache without {variables}")
 }
 
 /// Best-effort cleanup after the current launch's generated directory is touched.
@@ -22,8 +31,8 @@ pub fn prune(current: &[&Path]) {
     };
     let now = SystemTime::now();
     let max_age = Duration::from_secs(30 * 24 * 60 * 60);
-    for harness in [Harness::Claude, Harness::Codex, Harness::Copilot] {
-        let directory = root.join(harness.binary());
+    for name in ["claude", "codex", "copilot", "builtin-skills"] {
+        let directory = root.join(name);
         // Never traverse a symlink in place of an ayran-owned Harness directory.
         if !fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir()) {
             continue;

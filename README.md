@@ -20,3 +20,24 @@ To verify the source, install the tool versions in `mise.toml`, then run:
 ```sh
 just check
 ```
+
+
+Choose Capabilities once in an Alias, then switch how the Session runs with a Preset in your user config:
+
+```toml
+[presets.sol]
+harness = "codex"
+model = "gpt-6-sol"
+effort = "high"
+
+[presets.luna]
+harness = "codex"
+model = "gpt-6-luna"
+effort = "high"
+
+[aliases.work]
+preset = "sol"
+profiles = ["coding"]  # a Profile defined in your config
+```
+
+After shell activation, `work` uses Sol and `work --luna` uses Luna with the same Capabilities. The canonical spelling is `ayran --alias work --preset luna`. Presets belong only in user config; changing their model also changes resumed Sessions that use them.

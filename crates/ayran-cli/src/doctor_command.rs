@@ -59,11 +59,22 @@ pub fn run(matches: &ArgMatches) -> i32 {
         ) {
             Ok(home) => {
                 diagnostics.extend(crate::install_skills::advice(&layers, harness));
-                diagnostics.extend(crate::skill_snapshot::apply(
-                    &mut layers,
+                let reachable_skills = ayran_core::doctor::reachable_capabilities(
+                    &layers,
+                    &state.installed,
                     harness,
-                    &home.directory,
-                ));
+                    ayran_core::diagnostic::CapabilityKind::Skill,
+                );
+                diagnostics.extend(
+                    crate::skill_snapshot::apply(&mut layers, harness, &home.directory)
+                        .into_iter()
+                        .filter(|d| {
+                            d.layer.as_deref() != Some("built-in")
+                                || d.capability
+                                    .as_ref()
+                                    .is_some_and(|c| reachable_skills.contains(&c.name))
+                        }),
+                );
                 let isolated = home.mode == ayran_core::launch::HomeMode::Isolated;
                 let missing = isolated
                     && matches!(std::fs::metadata(&home.directory),
@@ -110,10 +121,25 @@ pub fn run(matches: &ArgMatches) -> i32 {
                         for alias in layers
                             .aliases
                             .values()
-                            .filter(|alias| alias.harness == harness)
+                            .filter(|alias| alias.effective_harness(&layers) == Some(harness))
                         {
                             profiles.extend(crate::codex_config::profiles(
                                 &alias
+                                    .args
+                                    .iter()
+                                    .flatten()
+                                    .map(std::ffi::OsString::from)
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        for preset in layers
+                            .presets
+                            .values()
+                            .filter(|preset| preset.value.harness == harness)
+                        {
+                            profiles.extend(crate::codex_config::profiles(
+                                &preset
+                                    .value
                                     .args
                                     .iter()
                                     .map(std::ffi::OsString::from)

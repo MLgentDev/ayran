@@ -67,6 +67,9 @@ fn files(
 fn hash(root: &Path) -> Result<String, Diagnostic> {
     let mut entries = BTreeMap::new();
     files(root, Path::new(""), &mut entries)?;
+    hash_entries(entries)
+}
+fn hash_entries(entries: BTreeMap<PathBuf, Vec<u8>>) -> Result<String, Diagnostic> {
     let mut digest = Sha256::new();
     for (path, content) in entries {
         let path = path
@@ -78,6 +81,28 @@ fn hash(root: &Path) -> Result<String, Diagnostic> {
         digest.update(content);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+/// Hash the embedded tree using the same identity as installed snapshots.
+pub(crate) fn builtin(name: &str) -> Result<Identity, Diagnostic> {
+    let mut entries = BTreeMap::new();
+    for relative in crate::builtin_skills::directories() {
+        entries.insert(PathBuf::from(relative), vec![0]);
+    }
+    for (relative, bytes) in crate::builtin_skills::files() {
+        let path = PathBuf::from(relative);
+        let mut content = vec![1];
+        #[cfg(unix)]
+        content.extend_from_slice(&0o644_u32.to_le_bytes());
+        content.extend_from_slice(bytes);
+        entries.insert(path, content);
+    }
+    Ok(Identity {
+        version: 1,
+        source: PathBuf::from(format!("builtin:{name}")),
+        name: name.to_owned(),
+        hash: hash_entries(entries)?,
+        git: None,
+    })
 }
 pub(crate) fn source(path: &Path) -> Result<Identity, Diagnostic> {
     let source = path.canonicalize().map_err(invalid)?;
@@ -404,6 +429,27 @@ pub(crate) fn apply(
                 )
             });
         }
+        if let SkillBinding::Builtin(name) = binding
+            && builtin(name).is_ok_and(|current| current.hash != identity.hash)
+        {
+            diagnostics.push(Diagnostic {
+                severity: ayran_core::diagnostic::Severity::Warning,
+                hint: Some(format!(
+                    "ayran install --skill {logical} --{}",
+                    harness.binary()
+                )),
+                ..error(
+                    "skill-outdated",
+                    format!("Skill {logical} uses an older built-in snapshot"),
+                )
+                .for_capability(
+                    harness,
+                    ayran_core::diagnostic::CapabilityKind::Skill,
+                    logical,
+                    &skill.path,
+                )
+            });
+        }
         if check_personal(&launch_home, harness, &identity.name, &destination).is_err() {
             continue;
         }
@@ -430,9 +476,13 @@ pub(crate) fn apply(
 
 /// A snapshot is independent of future source bytes; reinstall compares those separately.
 pub(crate) fn owned(source: &Path, root: &Path) -> Result<Option<(Identity, PathBuf)>, Diagnostic> {
-    let canonical = source
-        .canonicalize()
-        .unwrap_or_else(|_| source.to_path_buf());
+    let canonical = if source.to_str().is_some_and(|s| s.starts_with("builtin:")) {
+        source.to_path_buf()
+    } else {
+        source
+            .canonicalize()
+            .unwrap_or_else(|_| source.to_path_buf())
+    };
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -527,6 +577,9 @@ pub(crate) fn owned_binding(
     use ayran_core::config::SkillBinding;
     if let SkillBinding::Path(p) = binding {
         return owned(p, root);
+    }
+    if let SkillBinding::Builtin(name) = binding {
+        return owned(Path::new(&format!("builtin:{name}")), root);
     }
     if !matches!(binding, SkillBinding::Git(_)) {
         return Ok(None);

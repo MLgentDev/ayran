@@ -11,6 +11,7 @@ use crate::launch::{LaunchPlan, ResolutionTrace};
 #[serde(default)]
 pub struct Request {
     pub alias: Option<String>,
+    pub preset: Option<String>,
     #[serde(skip)]
     pub harness: Option<Harness>,
     pub model: Option<String>,
@@ -55,23 +56,116 @@ impl fmt::Display for CapabilityOrigin<'_> {
     }
 }
 
+struct RunSettings<'a> {
+    harness: Option<(Harness, String)>,
+    model: Option<(&'a str, String)>,
+    effort: Option<(Effort, String)>,
+    args: &'a [String],
+    args_source: String,
+    harness_args: bool,
+}
+
 impl Request {
-    /// Arguments after generated flags, in the exact order passed to the Harness.
-    pub fn trailing_args(&self, layers: &ConfigLayers, harness: Harness) -> Vec<OsString> {
-        let mut args = Vec::new();
+    fn run_settings<'a>(
+        &self,
+        layers: &'a ConfigLayers,
+    ) -> Result<RunSettings<'a>, Vec<Diagnostic>> {
         let alias = self
             .alias
             .as_ref()
-            .and_then(|name| layers.aliases.get(name));
-        if !self.no_harness_args {
-            if alias.is_none_or(|alias| alias.harness_args)
+            .map(|name| {
+                layers
+                    .aliases
+                    .get(name)
+                    .map(|alias| (name, alias))
+                    .ok_or_else(|| {
+                        vec![Diagnostic::error(
+                            "unknown-alias",
+                            format!("unknown Alias {name}"),
+                            None,
+                        )]
+                    })
+            })
+            .transpose()?;
+        let preset_name = self
+            .preset
+            .as_ref()
+            .or_else(|| alias.and_then(|(_, alias)| alias.preset.as_ref()));
+        let preset = preset_name
+            .map(|name| {
+                layers
+                    .presets
+                    .get(name)
+                    .map(|preset| (name, &preset.value))
+                    .ok_or_else(|| {
+                        vec![Diagnostic::error(
+                            "unknown-preset",
+                            format!("unknown Preset {name}"),
+                            None,
+                        )]
+                    })
+            })
+            .transpose()?;
+        let source = preset
+            .map(|(name, _)| {
+                if self.preset.is_some() {
+                    format!("Preset {name} from command line")
+                } else {
+                    format!("Preset {name} from Alias {}", self.alias.as_ref().unwrap())
+                }
+            })
+            .unwrap_or_default();
+        let mut run = RunSettings {
+            harness: preset.map(|(_, p)| (p.harness, source.clone())),
+            model: preset.and_then(|(_, p)| p.model.as_deref().map(|v| (v, source.clone()))),
+            effort: preset.and_then(|(_, p)| p.effort.map(|v| (v, source.clone()))),
+            args: preset.map_or(&[], |(_, p)| p.args.as_slice()),
+            args_source: source,
+            harness_args: preset.is_none_or(|(_, p)| p.harness_args),
+        };
+        if self.preset.is_none()
+            && let Some((name, alias)) = alias
+        {
+            let source = format!("Alias {name}");
+            if let Some(harness) = alias.harness {
+                if run.harness.as_ref().is_some_and(|(h, _)| *h != harness) {
+                    return Err(vec![Diagnostic::error(
+                        "config-invalid",
+                        format!("Alias {name} Harness conflicts with its Preset"),
+                        None,
+                    )]);
+                }
+                run.harness = Some((harness, source.clone()));
+            }
+            if let Some(model) = &alias.model {
+                run.model = Some((model, source.clone()));
+            }
+            if let Some(effort) = alias.effort {
+                run.effort = Some((effort, source.clone()));
+            }
+            if let Some(args) = &alias.args {
+                run.args = args;
+                run.args_source = source;
+            }
+            if let Some(enabled) = alias.harness_args {
+                run.harness_args = enabled;
+            }
+        }
+        Ok(run)
+    }
+
+    /// Arguments after generated flags, in the exact order passed to the Harness.
+    pub fn trailing_args(&self, layers: &ConfigLayers, harness: Harness) -> Vec<OsString> {
+        let mut args = Vec::new();
+        if !self.no_harness_args
+            && let Ok(run) = self.run_settings(layers)
+        {
+            if run.harness_args
                 && let Some(configured) = &layers.settings(harness).args
             {
                 args.extend(configured.value.iter().map(OsString::from));
             }
-            if let Some(alias) = alias {
-                args.extend(alias.args.iter().map(OsString::from));
-            }
+            args.extend(run.args.iter().map(OsString::from));
         }
         args.extend(self.passthrough.iter().cloned());
         args
@@ -82,48 +176,21 @@ impl Request {
         &self,
         layers: &ConfigLayers,
     ) -> Result<(Harness, String), Vec<Diagnostic>> {
-        let alias = self
-            .alias
-            .as_ref()
-            .map(|name| {
-                layers
-                    .aliases
-                    .get(name)
-                    .ok_or_else(|| {
-                        vec![Diagnostic::error(
-                            "unknown-alias",
-                            format!("unknown Alias {name}"),
-                            None,
-                        )]
-                    })
-                    .map(|alias| (name, alias))
-            })
-            .transpose()?;
-        if let (Some((name, definition)), Some(harness)) = (alias, self.harness)
-            && harness != definition.harness
-        {
-            return Err(vec![Diagnostic::error(
-                "usage",
-                format!("Harness flag conflicts with Alias {name}"),
-                None,
-            )]);
+        let run = self.run_settings(layers)?;
+        if let Some(harness) = self.harness {
+            if let Some((configured, source)) = &run.harness
+                && *configured != harness
+            {
+                return Err(vec![Diagnostic::error(
+                    "usage",
+                    format!("Harness flag conflicts with {source}"),
+                    None,
+                )]);
+            }
+            return Ok((harness, "flag".to_owned()));
         }
-        self.harness
-            .map(|value| (value, "flag".to_owned()))
-            .or_else(|| alias.map(|(name, value)| (value.harness, format!("Alias {name}"))))
-            .or_else(|| {
-                layers
-                    .default_harness
-                    .as_ref()
-                    .map(|source| (source.value, source.path.display().to_string()))
-            })
-            .ok_or_else(|| {
-                vec![Diagnostic::error(
-                    "no-harness",
-                    "no Harness chosen",
-                    Some("pass --claude, --codex, or --copilot, or set default_harness in user config"),
-                )]
-            })
+        run.harness.or_else(|| layers.default_harness.as_ref().map(|source| (source.value, source.path.display().to_string())))
+            .ok_or_else(|| vec![Diagnostic::error("no-harness", "no Harness chosen", Some("pass --claude, --codex, or --copilot, or set default_harness in user config"))])
     }
 }
 
@@ -142,20 +209,13 @@ pub fn resolve(
         .alias
         .as_ref()
         .map(|name| (name, &layers.aliases[name]));
-    let alias_source = alias.map(|(name, _)| format!("Alias {name}"));
+    let run = request.run_settings(layers)?;
     let settings = layers.settings(harness);
     let model = request
         .model
         .as_deref()
         .map(|value| (value, "flag".to_owned()))
-        .or_else(|| {
-            alias.and_then(|(_, value)| {
-                value
-                    .model
-                    .as_deref()
-                    .map(|model| (model, alias_source.clone().unwrap()))
-            })
-        })
+        .or(run.model)
         .or_else(|| {
             settings
                 .model
@@ -165,13 +225,7 @@ pub fn resolve(
     let effort = request
         .effort
         .map(|value| (value, "flag".to_owned()))
-        .or_else(|| {
-            alias.and_then(|(_, value)| {
-                value
-                    .effort
-                    .map(|effort| (effort, alias_source.clone().unwrap()))
-            })
-        })
+        .or(run.effort)
         .or_else(|| {
             settings
                 .effort
@@ -621,7 +675,7 @@ pub fn resolve(
         .extend(resolved_mcp.args.iter().map(Into::into));
     let mut harness_args = Vec::new();
     if !request.no_harness_args {
-        if alias.is_none_or(|(_, definition)| definition.harness_args)
+        if run.harness_args
             && let Some(args) = &settings.args
         {
             for arg in &args.value {
@@ -629,11 +683,9 @@ pub fn resolve(
                 harness_args.push(format!("Harness arg: {arg} ({})", args.path.display()));
             }
         }
-        if let Some((name, definition)) = alias {
-            for arg in &definition.args {
-                options.args.push(arg.into());
-                harness_args.push(format!("Harness arg: {arg} (Alias {name})"));
-            }
+        for arg in run.args {
+            options.args.push(arg.into());
+            harness_args.push(format!("Harness arg: {arg} ({})", run.args_source));
         }
     }
     options.args.extend(request.passthrough);

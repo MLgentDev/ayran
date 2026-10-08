@@ -71,6 +71,7 @@ pub(crate) fn run(action: &str, matches: &ArgMatches) -> i32 {
                             let reason = match binding {
                                 Some(SkillBinding::Path(_)) => "path Binding",
                                 Some(SkillBinding::Git(_)) => "git Binding",
+                                Some(SkillBinding::Builtin(_)) => "built-in Binding",
                                 Some(SkillBinding::Absent) => "deliberately absent Binding",
                                 _ => "missing Binding",
                             };
