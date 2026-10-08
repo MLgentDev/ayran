@@ -60,11 +60,10 @@ impl TestHome {
     }
 
     fn cache_root(&self) -> PathBuf {
-        self.0.path().join(if cfg!(windows) {
-            "local/ayran"
-        } else {
-            "cache/ayran"
-        })
+        self.0
+            .path()
+            .join(if cfg!(windows) { "local" } else { "cache" })
+            .join("ayran")
     }
 }
 
